@@ -1623,8 +1623,10 @@ async def process_stream(request: Request):
             return
         try:
             ensure_drive_parent_folder_config(get_config())
-        except Exception:
-            yield sse_event({"type": "error", "step": 0, "message": "Google Drive保存先フォルダが設定されていません。管理者に連絡してください。"})
+        except Exception as e:
+            import logging as _log
+            _log.getLogger("app").error("Drive config check failed: %s", e, exc_info=True)
+            yield sse_event({"type": "error", "step": 0, "message": f"Google Drive設定エラー: {e}"})
             return
 
         batch_id = now_iso().replace(":", "").replace("-", "") + "_" + uuid.uuid4().hex[:8]
