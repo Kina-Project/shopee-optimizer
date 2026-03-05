@@ -1,0 +1,45 @@
+# Keep deployment payload small for Cloud Run source deploy.
+# Syntax is .gitignore-compatible.
+
+# VCS / editor
+.git/
+.gitignore
+.DS_Store
+.vscode/
+.idea/
+
+# Python cache / local env
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# Runtime-generated artifacts
+output/
+
+# Large archives / binaries
+*.zip
+*.tar
+*.tar.gz
+
+# Test and research assets not needed at runtime
+test_*.py
+テストデータ_スクショ/
+リサーチ/
+
+# Docs and notes
+*.md
+*.txt
+喜納さんから/
+喜納さんメモ
+shopee_tool.py
+extend_video.py
+
+# Preserve runtime essentials explicitly
+!app.py
+!shopee_core.py
+!requirements.txt
+!Dockerfile
+BGM/*
+!BGM/Vanilla.mp3

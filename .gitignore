@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Secrets — NEVER commit
+.env
+
+# Runtime artifacts
+output/
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+
+# Test / research assets
+テストデータ_スクショ/
+リサーチ/
+喜納さんから/
+喜納さんメモ
+
+# Dev-only scripts
+shopee_tool.py
+extend_video.py
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Specstory
+.specstory/
