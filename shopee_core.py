@@ -41,9 +41,7 @@ def get_config():
             "GCP_KEY_PATH",
             str(Path.home() / ".config" / "gcloud" / "keys" / "mcp-sheets-key.json"),
         )),
-        "spreadsheet_id": os.environ.get(
-            "SPREADSHEET_ID", "1OJKpekPSatqg5ypLc8-R2EkibGORMsQBL9yBPyEJZwc"
-        ),
+        "spreadsheet_id": os.environ.get("SPREADSHEET_ID", ""),
         "drive_parent_folder_id": os.environ.get(
             "DRIVE_PARENT_FOLDER_ID", ""
         ),
@@ -192,15 +190,19 @@ def fetch_amazon_product(asin, api_key):
 
     description_ja = product.get("description", "")
 
+    main_img = product.get("main_image", {}).get("link", "")
     image_urls = []
     for img in product.get("images", []):
         url = img.get("link", "")
         if url:
             image_urls.append(url)
-    if not image_urls:
-        main_img = product.get("main_image", {}).get("link", "")
-        if main_img:
-            image_urls.append(main_img)
+    if not image_urls and main_img:
+        image_urls.append(main_img)
+    elif main_img and main_img in image_urls:
+        image_urls.remove(main_img)
+        image_urls.insert(0, main_img)
+    elif main_img:
+        image_urls.insert(0, main_img)
 
     credits_remaining = data.get("request_info", {}).get("credits_remaining", "?")
 
@@ -416,9 +418,12 @@ def _merge_bgm(video_path, output_path, bgm_path):
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
          "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)],
-        capture_output=True, text=True
+        capture_output=True, text=True, timeout=15
     )
-    vid_duration = float(probe.stdout.strip())
+    try:
+        vid_duration = float(probe.stdout.strip())
+    except (ValueError, AttributeError):
+        vid_duration = 10.0
     fade_out_start = max(0, vid_duration - 2)
 
     subprocess.run([
@@ -553,7 +558,7 @@ def generate_video_kenburns(image_paths, product, output_dir, config=None, outpu
     return final_path
 
 
-def generate_video_ai(image_path, prompt, model="hailuo", negative_prompt="", duration=5):
+def generate_video_ai(image_path, prompt, model="hailuo", negative_prompt="", duration=None):
     """fal.aiでI2V動画を生成し、動画URLを返す"""
     try:
         import fal_client
@@ -571,8 +576,9 @@ def generate_video_ai(image_path, prompt, model="hailuo", negative_prompt="", du
         "image_url": image_url,
         **model_config["params"],
     }
-    if duration:
-        arguments["duration"] = model_config["params"].get("duration", duration)
+    # duration が明示指定された場合はモデルデフォルトを上書き
+    if duration is not None:
+        arguments["duration"] = duration
 
     if model_config["supports_negative"] and negative_prompt:
         arguments["negative_prompt"] = negative_prompt
@@ -597,6 +603,7 @@ def generate_video(
     output_path=None,
     source_image_path=None,
     prompt_suffix="",
+    duration=None,
 ):
     """AI動画生成。FAL_KEY未設定時はKen Burnsへフォールバック"""
     if not image_paths:
@@ -610,8 +617,6 @@ def generate_video(
     fal_key = os.environ.get("FAL_KEY", "").strip()
     if not fal_key:
         return generate_video_kenburns(image_paths, product, output_dir, config, output_path=target_path)
-
-    os.environ["FAL_KEY"] = fal_key
     effect_config = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"])
 
     source_path = Path(source_image_path) if source_image_path else Path(image_paths[0])
@@ -627,6 +632,7 @@ def generate_video(
         prompt=prompt,
         model=effect_config["model"],
         negative_prompt=effect_config.get("negative", ""),
+        duration=duration,
     )
     resp = requests.get(video_url, timeout=120)
     resp.raise_for_status()
