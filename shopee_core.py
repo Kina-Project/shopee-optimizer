@@ -121,12 +121,12 @@ EFFECT_PROMPTS = {
 FAL_MODELS = {
     "hailuo": {
         "model_id": "fal-ai/minimax/hailuo-2.3/pro/image-to-video",
-        "params": {"duration": 6},
+        "params": {"duration": 10},
         "supports_negative": False,
     },
     "kling": {
         "model_id": "fal-ai/kling-video/v2.1/standard/image-to-video",
-        "params": {"duration": "5", "aspect_ratio": "9:16"},
+        "params": {"duration": "10", "aspect_ratio": "9:16"},
         "supports_negative": True,
     },
 }
