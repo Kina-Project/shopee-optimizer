@@ -16,6 +16,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from shopee_core import (
     EFFECT_PROMPTS,
@@ -62,6 +63,18 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 def sse_event(data: dict) -> str:
@@ -820,9 +833,13 @@ async function runBatch(){
       buf=lines.pop();
       for(const line of lines){
         if(!line.startsWith('data: '))continue;
-        const evt=JSON.parse(line.slice(6));
-        lastStreamEventAt=Date.now();
-        handleEvent(evt);
+        try{
+          const evt=JSON.parse(line.slice(6));
+          lastStreamEventAt=Date.now();
+          handleEvent(evt);
+        }catch(parseErr){
+          console.warn('SSE parse error:',parseErr,line);
+        }
       }
     }
   }catch(e){
@@ -1548,6 +1565,8 @@ a{{color:#ee4d2d;text-decoration:none;transition:color .2s}} a:hover{{color:#d43
 
 @app.get("/files/{asin}/{path:path}")
 async def serve_file(asin: str, path: str):
+    if not re.match(r'^[A-Z0-9]{10}$', asin):
+        raise HTTPException(status_code=400, detail="Invalid ASIN format")
     file_path = OUTPUT_BASE / asin / path
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
@@ -1564,7 +1583,10 @@ async def serve_file(asin: str, path: str):
 @app.post("/process-stream")
 async def process_stream(request: Request):
     body = await request.body()
-    data = json.loads(body)
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(status_code=400, detail="リクエストのJSON形式が不正です")
 
     urls = data.get("urls") or []
     legacy_url = (data.get("url") or "").strip()
@@ -1593,8 +1615,8 @@ async def process_stream(request: Request):
             return
         try:
             ensure_drive_parent_folder_config(get_config())
-        except Exception as e:
-            yield sse_event({"type": "error", "step": 0, "message": str(e)})
+        except Exception:
+            yield sse_event({"type": "error", "step": 0, "message": "Google Drive保存先フォルダが設定されていません。管理者に連絡してください。"})
             return
 
         batch_id = now_iso().replace(":", "").replace("-", "") + "_" + uuid.uuid4().hex[:8]
@@ -1627,8 +1649,12 @@ async def process_stream(request: Request):
             try:
                 asin = extract_asin(url)
                 product = fetch_amazon_product(asin, rainforest_key)
-            except Exception as e:
+            except ValueError as e:
                 yield emit({"type": "error", "index": idx, "step": 1, "message": str(e)})
+                continue
+            except Exception as e:
+                logger.warning("Step1 failed for %s: %s", url, e, exc_info=True)
+                yield emit({"type": "error", "index": idx, "step": 1, "message": "商品情報の取得に失敗しました。URLを確認してください。"})
                 continue
 
             output_dir = output_base / asin
@@ -1654,7 +1680,8 @@ async def process_stream(request: Request):
             try:
                 image_paths = download_images(product["image_urls"], images_dir)
             except Exception as e:
-                yield emit({"type": "error", "index": idx, "step": 2, "message": str(e)})
+                logger.warning("Step2 failed for %s: %s", asin, e, exc_info=True)
+                yield emit({"type": "error", "index": idx, "step": 2, "message": "画像のダウンロードに失敗しました。"})
                 continue
 
             image_urls = [f"/files/{asin}/images/{Path(p).name}" for p in image_paths]
@@ -1678,7 +1705,8 @@ async def process_stream(request: Request):
             try:
                 product = translate_product(product)
             except Exception as e:
-                yield emit({"type": "error", "index": idx, "step": 3, "message": str(e)})
+                logger.warning("Step3 failed for %s: %s", asin, e, exc_info=True)
+                yield emit({"type": "error", "index": idx, "step": 3, "message": "翻訳処理に失敗しました。"})
                 continue
 
             yield emit({
@@ -1769,7 +1797,8 @@ async def process_stream(request: Request):
                 if not folder_url:
                     raise RuntimeError("DriveフォルダURLが取得できません")
             except Exception as e:
-                yield emit({"type": "error", "index": idx, "step": 6, "message": f"Driveアップロード失敗: {e}"})
+                logger.warning("Step6 Drive upload failed for %s: %s", asin, e, exc_info=True)
+                yield emit({"type": "error", "index": idx, "step": 6, "message": "Google Driveへのアップロードに失敗しました。"})
                 continue
 
             yield emit({"type": "step_done", "index": idx, "step": 6, "data": {"drive_folder_url": folder_url}})
@@ -1897,9 +1926,14 @@ async def regenerate_video(request: Request):
             source_image_path=source_image_path,
             prompt_suffix=prompt_extra,
         )
+        if out is None:
+            raise HTTPException(status_code=500, detail="動画生成に失敗しました。画像を確認してください。")
         video_path = Path(out)
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"再生成失敗: {e}")
+        logger.warning("regenerate_video failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="動画の再生成に失敗しました。しばらくしてから再度お試しください。")
 
     drive_file_url = ""
     folder_id = product.get("drive_folder_id", "")
@@ -1910,7 +1944,8 @@ async def regenerate_video(request: Request):
         try:
             drive_file_url = upload_file_to_drive_folder(video_path, folder_id, config)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Driveアップロード失敗: {e}")
+            logger.warning("Drive upload failed for %s: %s", asin, e, exc_info=True)
+            raise HTTPException(status_code=500, detail="Google Driveへのアップロードに失敗しました。設定を確認してください。")
     else:
         try:
             drive_meta = upload_to_drive(asin, [], [], video_path, config, return_meta=True)
@@ -1919,7 +1954,8 @@ async def regenerate_video(request: Request):
             video_item = drive_meta.get("video_item", {}) or {}
             drive_file_url = video_item.get("webViewLink", "")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Driveアップロード失敗: {e}")
+            logger.warning("Drive upload failed for %s: %s", asin, e, exc_info=True)
+            raise HTTPException(status_code=500, detail="Google Driveへのアップロードに失敗しました。設定を確認してください。")
     if not folder_url and folder_id:
         folder_url = f"https://drive.google.com/drive/folders/{folder_id}"
     if not drive_file_url:
