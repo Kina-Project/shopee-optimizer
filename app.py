@@ -48,6 +48,76 @@ EST_PER_PRODUCT_SEC = 165
 
 BATCH_STORE = {}
 
+STEP_NAMES = {
+    1: "Amazon商品情報を取得",
+    2: "画像ダウンロード",
+    3: "英語翻訳 + 逆翻訳",
+    4: "画像テキスト英語化",
+    5: "動画生成",
+    6: "Google Driveアップロード",
+    7: "スプレッドシート書き込み",
+}
+
+
+def can_restart_from(product_state: dict, step: int) -> bool:
+    """指定ステップから再開可能かを判定する。Step 3〜7のみ対応。"""
+    if step < 3 or step > 7:
+        return False
+    asin = product_state.get("asin", "")
+    if not asin:
+        return False
+
+    # Step 3以降: Step 1-2の成果物（product + image_paths）が必要
+    product = product_state.get("product")
+    image_paths = product_state.get("image_paths", [])
+    if not product or not image_paths:
+        return False
+    # 画像ファイルが実在するか確認
+    if not any(Path(p).exists() for p in image_paths):
+        return False
+
+    # Step 3: 翻訳からやるので product+images があれば OK
+    if step == 3:
+        return True
+    # Step 4以降: 翻訳済み（title_en）が必要
+    if not product.get("title_en"):
+        return False
+    if step == 4:
+        return True
+
+    # Step 5以降: title_en があれば OK（動画生成は翻訳データがあれば可能）
+    if step <= 5:
+        return True
+
+    # Step 6: 動画ファイルが実在する必要がある
+    if step == 6:
+        videos = product_state.get("videos", [])
+        return any(Path(v.get("video_path", "")).exists() for v in videos)
+
+    # Step 7: Drive folder URL が必要
+    if step == 7:
+        return bool(product_state.get("drive_folder_url"))
+
+    return False
+
+
+def find_batch_for_asin(asin: str) -> tuple[str, dict] | tuple[None, None]:
+    """BATCH_STOREからASINを含む最新バッチを検索して返す。"""
+    best_batch_id = None
+    best_product = None
+    best_time = ""
+    for bid, batch in BATCH_STORE.items():
+        for p in batch.get("results", []):
+            if p.get("asin") == asin:
+                created = p.get("created_at", "") or batch.get("created_at", "")
+                if created > best_time:
+                    best_time = created
+                    best_batch_id = bid
+                    best_product = p
+    if best_batch_id:
+        return best_batch_id, best_product
+    return None, None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -1371,6 +1441,9 @@ a:hover{{color:#d4391c}}
 
 @app.get("/history/asin/{asin}", response_class=HTMLResponse)
 async def history_asin_page(asin: str):
+    # バッチストアからASINを検索（再開カード表示用）
+    found_batch_id, _found_product = find_batch_for_asin(asin)
+
     rows = [r for r in fetch_video_generation_history(limit=1000, config=get_config()) if r.get("asin", "") == asin]
     rows.sort(key=lambda x: parse_ts(x.get("timestamp", "")), reverse=True)
     from_product_sheet = False
@@ -1467,8 +1540,153 @@ a{{color:#ee4d2d;text-decoration:none;transition:color .2s}} a:hover{{color:#d43
     </table>
     </div>
   </div>
+  {_build_restart_card_html(found_batch_id, asin) if found_batch_id else ''}
 </div></body></html>"""
     return page
+
+
+def _restart_card_js(batch_id: str, asin: str) -> str:
+    """再開カード用JavaScriptを生成する（ブレースエスケープの問題を回避）"""
+    safe_bid = json.dumps(batch_id)
+    safe_asin = json.dumps(asin)
+    return (
+        "<script>\n"
+        "const BATCH_ID = " + safe_bid + ";\n"
+        "const ASIN = " + safe_asin + ";\n"
+        "\n"
+        "async function loadRestartableSteps() {\n"
+        "  try {\n"
+        "    const res = await fetch('/api/restartable-steps/' + BATCH_ID + '/' + ASIN);\n"
+        "    const data = await res.json();\n"
+        "    const sel = document.getElementById('restart-step');\n"
+        "    sel.innerHTML = '';\n"
+        "    let hasAvailable = false;\n"
+        "    data.steps.forEach(s => {\n"
+        "      const opt = document.createElement('option');\n"
+        "      opt.value = s.step;\n"
+        "      opt.textContent = 'Step ' + s.step + ': ' + s.name;\n"
+        "      opt.disabled = !s.available;\n"
+        "      if (s.available && !hasAvailable) {\n"
+        "        opt.selected = true;\n"
+        "        hasAvailable = true;\n"
+        "      }\n"
+        "      sel.appendChild(opt);\n"
+        "    });\n"
+        "    if (!hasAvailable) {\n"
+        "      const opt = document.createElement('option');\n"
+        "      opt.value = '';\n"
+        "      opt.textContent = '再開可能なステップがありません（Step 1からやり直してください）';\n"
+        "      opt.disabled = true;\n"
+        "      opt.selected = true;\n"
+        "      sel.insertBefore(opt, sel.firstChild);\n"
+        "    }\n"
+        "    document.getElementById('restart-btn').disabled = !hasAvailable;\n"
+        "  } catch (e) {\n"
+        "    document.getElementById('restart-step').innerHTML = '<option disabled selected>読み込みエラー</option>';\n"
+        "  }\n"
+        "}\n"
+        "\n"
+        "function startRestart() {\n"
+        "  const step = document.getElementById('restart-step').value;\n"
+        "  const effect = document.getElementById('restart-effect').value;\n"
+        "  if (!step) return;\n"
+        "\n"
+        "  document.getElementById('restart-btn').disabled = true;\n"
+        "  document.getElementById('restart-btn').textContent = '実行中...';\n"
+        "  document.getElementById('restart-progress').style.display = 'block';\n"
+        "  document.getElementById('restart-error').style.display = 'none';\n"
+        "  document.getElementById('restart-steps-list').innerHTML = '';\n"
+        "\n"
+        "  const stepNames = " + json.dumps(STEP_NAMES, ensure_ascii=False) + ";\n"
+        "\n"
+        "  fetch('/restart-from-step', {\n"
+        "    method: 'POST',\n"
+        "    headers: {'Content-Type': 'application/json'},\n"
+        "    body: JSON.stringify({batch_id: BATCH_ID, asin: ASIN, from_step: parseInt(step), effect: effect})\n"
+        "  }).then(response => {\n"
+        "    const reader = response.body.getReader();\n"
+        "    const decoder = new TextDecoder();\n"
+        "    let buf = '';\n"
+        "\n"
+        "    function read() {\n"
+        "      reader.read().then(({done, value}) => {\n"
+        "        if (done) return;\n"
+        "        buf += decoder.decode(value, {stream: true});\n"
+        "        const lines = buf.split('\\n');\n"
+        "        buf = lines.pop();\n"
+        "        lines.forEach(line => {\n"
+        "          if (!line.startsWith('data: ')) return;\n"
+        "          try {\n"
+        "            const ev = JSON.parse(line.slice(6));\n"
+        "            handleRestartEvent(ev, stepNames);\n"
+        "          } catch(e) {}\n"
+        "        });\n"
+        "        read();\n"
+        "      });\n"
+        "    }\n"
+        "    read();\n"
+        "  }).catch(err => {\n"
+        "    document.getElementById('restart-error').style.display = 'block';\n"
+        "    document.getElementById('restart-error').textContent = 'エラー: ' + err.message;\n"
+        "    document.getElementById('restart-btn').disabled = false;\n"
+        "    document.getElementById('restart-btn').textContent = '再開';\n"
+        "  });\n"
+        "}\n"
+        "\n"
+        "function handleRestartEvent(ev, stepNames) {\n"
+        "  const list = document.getElementById('restart-steps-list');\n"
+        "  if (ev.type === 'step_skip') {\n"
+        "    list.innerHTML += '<div style=\"color:#9298a8\">Step ' + ev.step + ': ' + (ev.name || stepNames[ev.step] || '') + ' — <span style=\"font-style:italic\">スキップ</span></div>';\n"
+        "  } else if (ev.type === 'step') {\n"
+        "    list.innerHTML += '<div id=\"step-row-' + ev.step + '\">Step ' + ev.step + ': ' + (ev.name || '') + ' — <span style=\"color:#f59e0b;font-weight:600\">実行中...</span></div>';\n"
+        "  } else if (ev.type === 'step_done') {\n"
+        "    const row = document.getElementById('step-row-' + ev.step);\n"
+        "    if (row) row.innerHTML = row.innerHTML.replace(/実行中\\.\\.\\./, '<span style=\"color:#16a34a;font-weight:600\">完了</span>');\n"
+        "  } else if (ev.type === 'step_warn') {\n"
+        "    list.innerHTML += '<div style=\"color:#f59e0b;font-size:12px;padding-left:16px\">警告: ' + (ev.message || '') + '</div>';\n"
+        "  } else if (ev.type === 'error') {\n"
+        "    list.innerHTML += '<div style=\"color:#dc2626;font-weight:600\">Step ' + (ev.step || '?') + ': エラー — ' + (ev.message || '') + '</div>';\n"
+        "    document.getElementById('restart-btn').disabled = false;\n"
+        "    document.getElementById('restart-btn').textContent = '再開';\n"
+        "  } else if (ev.type === 'all_done') {\n"
+        "    list.innerHTML += '<div style=\"color:#16a34a;font-weight:700;margin-top:8px\">すべて完了しました。3秒後にリロードします...</div>';\n"
+        "    setTimeout(() => location.reload(), 3000);\n"
+        "  }\n"
+        "}\n"
+        "\n"
+        "loadRestartableSteps();\n"
+        "</script>"
+    )
+
+
+RESTART_CARD_HTML = """<div class="card" id="restart-card">
+    <h2>ステップから再開</h2>
+    <div id="restart-controls" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
+      <select id="restart-step" style="padding:8px 12px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;background:#fff;min-width:220px">
+        <option value="" disabled selected>読み込み中...</option>
+      </select>
+      <select id="restart-effect" style="padding:8px 12px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;background:#fff">
+        <option value="zoom">zoom</option>
+        <option value="unbox">unbox</option>
+        <option value="steam">steam</option>
+        <option value="condensation">condensation</option>
+        <option value="pickup">pickup</option>
+      </select>
+      <button id="restart-btn" onclick="startRestart()" disabled
+        style="padding:8px 20px;background:#ee4d2d;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:background .2s;font-family:inherit">
+        再開
+      </button>
+    </div>
+    <div id="restart-progress" style="display:none">
+      <div id="restart-steps-list" style="font-size:13px;line-height:2"></div>
+    </div>
+    <div id="restart-error" style="display:none;color:#dc2626;font-size:13px;margin-top:8px"></div>
+  </div>"""
+
+
+def _build_restart_card_html(batch_id: str, asin: str) -> str:
+    """再開カードのHTMLスニペットを生成する"""
+    return RESTART_CARD_HTML + "\n" + _restart_card_js(batch_id, asin)
 
 
 @app.get("/history/{batch_id}/{asin}", response_class=HTMLResponse)
@@ -1565,10 +1783,297 @@ a{{color:#ee4d2d;text-decoration:none;transition:color .2s}} a:hover{{color:#d43
     <h2>動画履歴</h2>
     {''.join(videos_html) if videos_html else '<div style="font-size:12px;color:#9298a8">なし</div>'}
   </div>
+  {_build_restart_card_html(batch_id, asin)}
 </div>
 </body>
 </html>"""
     return page
+
+
+# ─── ステップから再開 API ───────────────────────────────────────────
+
+@app.get("/api/restartable-steps/{batch_id}/{asin}")
+async def restartable_steps(batch_id: str, asin: str):
+    """product_stateを検査し、各ステップの再開可否を返す。"""
+    batch = BATCH_STORE.get(batch_id)
+    if not batch:
+        path = batch_state_path(batch_id)
+        if path.exists():
+            try:
+                batch = json.loads(path.read_text(encoding="utf-8"))
+                BATCH_STORE[batch_id] = batch
+            except Exception:
+                batch = None
+    if not batch:
+        raise HTTPException(status_code=404, detail="batch_idが見つかりません")
+
+    product = next((p for p in batch.get("results", []) if p.get("asin") == asin), None)
+    if not product:
+        raise HTTPException(status_code=404, detail="asinが見つかりません")
+
+    steps = []
+    for step_num in range(3, 8):
+        steps.append({
+            "step": step_num,
+            "name": STEP_NAMES[step_num],
+            "available": can_restart_from(product, step_num),
+        })
+
+    return JSONResponse({
+        "batch_id": batch_id,
+        "asin": asin,
+        "steps": steps,
+    })
+
+
+@app.post("/restart-from-step")
+async def restart_from_step(request: Request):
+    """指定ステップ以降を再実行するSSEストリーミングエンドポイント。"""
+    body = await request.body()
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(status_code=400, detail="リクエストのJSON形式が不正です")
+
+    batch_id = data.get("batch_id", "")
+    asin = data.get("asin", "")
+    try:
+        from_step = int(data.get("from_step", 0))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="from_stepは整数で指定してください")
+    effect = data.get("effect", "zoom")
+
+    if from_step < 3 or from_step > 7:
+        raise HTTPException(status_code=400, detail="from_stepは3〜7の範囲で指定してください")
+
+    if effect not in EFFECT_PROMPTS:
+        raise HTTPException(status_code=400, detail="無効なeffectです")
+
+    # Drive設定の事前チェック（Step 6を含む場合）
+    if from_step <= 6:
+        try:
+            ensure_drive_parent_folder_config(get_config())
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Google Drive設定エラー: {e}")
+
+    batch = BATCH_STORE.get(batch_id)
+    if not batch:
+        path = batch_state_path(batch_id)
+        if path.exists():
+            try:
+                batch = json.loads(path.read_text(encoding="utf-8"))
+                BATCH_STORE[batch_id] = batch
+            except Exception:
+                batch = None
+    if not batch:
+        raise HTTPException(status_code=404, detail="batch_idが見つかりません")
+
+    product_state = next((p for p in batch.get("results", []) if p.get("asin") == asin), None)
+    if not product_state:
+        raise HTTPException(status_code=404, detail="asinが見つかりません")
+
+    if not can_restart_from(product_state, from_step):
+        raise HTTPException(status_code=400, detail=f"Step {from_step}から再開できません。必要なデータまたはファイルが不足しています。")
+
+    def generate():
+        yield ":" + (" " * 2048) + "\n\n"
+        yield "retry: 3000\n\n"
+
+        started = datetime.now()
+        est_total = (8 - from_step) * 30  # 大まかな推定
+
+        def emit(payload):
+            elapsed = int((datetime.now() - started).total_seconds())
+            payload["batch_id"] = batch_id
+            payload["remaining_sec"] = max(0, est_total - elapsed)
+            return sse_event(payload)
+
+        # 既存データを復元
+        product = dict(product_state.get("product", {}))
+        image_paths = [str(p) for p in product_state.get("image_paths", [])]
+        image_urls = list(product_state.get("image_urls", []))
+        translated_image_paths = [str(p) for p in product_state.get("translated_image_paths", [])]
+        url = product_state.get("url", "")
+        config = get_config()
+        output_dir = config["output_base"] / asin
+        output_dir.mkdir(parents=True, exist_ok=True)
+        videos_dir = output_dir / "videos"
+        videos_dir.mkdir(exist_ok=True)
+
+        openai_key = os.environ.get("OPENAI_API_KEY", "")
+
+        # スキップされたステップを通知
+        for s in range(1, from_step):
+            yield emit({"type": "step_skip", "index": 0, "step": s, "name": STEP_NAMES[s], "reason": "既存データを使用"})
+
+        total = 7
+
+        # --- Step 3: 翻訳 ---
+        if from_step <= 3:
+            yield emit({"type": "step", "index": 0, "step": 3, "total": total, "name": "英語翻訳 + 逆翻訳", "est": "5秒"})
+            try:
+                product = translate_product(product)
+            except Exception as e:
+                logger.warning("Restart Step3 failed for %s: %s", asin, e, exc_info=True)
+                yield emit({"type": "error", "index": 0, "step": 3, "message": f"翻訳処理に失敗しました: {e}"})
+                return
+            yield emit({
+                "type": "step_done", "index": 0, "step": 3,
+                "data": {
+                    "title_en": product.get("title_en", ""),
+                    "title_reverse": product.get("title_reverse", ""),
+                    "features_en": product.get("features_en", []),
+                }
+            })
+
+        # --- Step 4: 画像テキスト英語化 ---
+        if from_step <= 4:
+            if openai_key:
+                est = f"約{len(image_paths) * 45}秒（{len(image_paths)}枚）"
+                yield emit({"type": "step", "index": 0, "step": 4, "total": total, "name": "画像テキスト英語化", "est": est})
+                try:
+                    translated_image_paths = translate_images(openai_key, image_paths, output_dir, product)
+                    translated_image_paths = [str(p) for p in translated_image_paths]
+                except Exception as e:
+                    yield emit({"type": "step_warn", "index": 0, "step": 4, "message": f"一部失敗: {e}"})
+                translated_image_urls = [f"/files/{asin}/images_en/{Path(p).name}" for p in translated_image_paths]
+                yield emit({
+                    "type": "step_done", "index": 0, "step": 4,
+                    "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}
+                })
+            else:
+                yield emit({"type": "step_skip", "index": 0, "step": 4, "name": "画像テキスト英語化", "reason": "OpenAIキー未設定"})
+
+        # --- Step 5: 動画生成 ---
+        video_record = None
+        if from_step <= 5:
+            existing_videos = product_state.get("videos", [])
+            version = next_video_version(existing_videos)
+            model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
+            video_path = videos_dir / f"{version}.mp4"
+
+            yield emit({"type": "step", "index": 0, "step": 5, "total": total, "name": "動画生成", "est": "30〜120秒"})
+            try:
+                out = generate_video(image_paths, product, output_dir, config=config, effect=effect, output_path=video_path)
+                video_path = Path(out) if out else None
+            except Exception as e:
+                video_path = None
+                yield emit({"type": "step_warn", "index": 0, "step": 5, "message": f"動画生成失敗: {e}"})
+
+            if video_path and video_path.exists():
+                shutil.copy2(video_path, output_dir / "shopee_video.mp4")
+                video_record = {
+                    "version": version,
+                    "effect": effect,
+                    "model": model,
+                    "memo": "再開による再生成",
+                    "prompt_extra": "",
+                    "created_at": now_iso(),
+                    "video_path": str(video_path),
+                    "video_url": to_rel_video_url(asin, video_path),
+                    "drive_file_url": "",
+                    "source_image_path": str(image_paths[0]) if image_paths else "",
+                    "source_image_url": image_urls[0] if image_urls else "",
+                }
+
+            yield emit({
+                "type": "step_done", "index": 0, "step": 5,
+                "data": {"video_url": video_record["video_url"] if video_record else None}
+            })
+        else:
+            # Step 6以降から開始の場合、既存の最新動画を使う
+            existing_videos = product_state.get("videos", [])
+            if existing_videos:
+                video_record = existing_videos[-1]
+
+        # --- Step 6: Google Driveアップロード ---
+        folder_url = product_state.get("drive_folder_url", "")
+        folder_id = product_state.get("drive_folder_id", "")
+        thumb_url = product_state.get("drive_thumb_url", "")
+        if from_step <= 6:
+            yield emit({"type": "step", "index": 0, "step": 6, "total": total, "name": "Google Driveアップロード", "est": "10秒"})
+            vp = Path(video_record["video_path"]) if video_record and video_record.get("video_path") else None
+            try:
+                drive_meta = upload_to_drive(
+                    asin, image_paths, translated_image_paths, vp, config, return_meta=True
+                )
+                folder_url = drive_meta.get("folder_url", "") or folder_url
+                folder_id = drive_meta.get("folder_id", "") or parse_drive_folder_id(folder_url)
+                if not folder_url and folder_id:
+                    folder_url = f"https://drive.google.com/drive/folders/{folder_id}"
+                image_items = drive_meta.get("image_items", [])
+                if image_items:
+                    thumb_url = drive_thumb_url(image_items[0].get("id", ""))
+                if video_record:
+                    video_item = drive_meta.get("video_item", {}) or {}
+                    video_record["drive_file_url"] = video_item.get("webViewLink", "")
+                    if not video_record["drive_file_url"] and vp:
+                        raise RuntimeError("動画ファイルのDrive保存に失敗しました")
+                if not folder_url:
+                    raise RuntimeError("DriveフォルダURLが取得できません")
+            except Exception as e:
+                logger.warning("Restart Step6 Drive upload failed for %s: %s", asin, e, exc_info=True)
+                yield emit({"type": "error", "index": 0, "step": 6, "message": f"Google Driveアップロード失敗: {e}"})
+                return
+
+            yield emit({"type": "step_done", "index": 0, "step": 6, "data": {"drive_folder_url": folder_url}})
+
+            if video_record:
+                try:
+                    append_video_generation_log(
+                        asin=asin,
+                        product_url=url,
+                        version=video_record.get("version", ""),
+                        effect=video_record.get("effect", ""),
+                        model=video_record.get("model", ""),
+                        memo=video_record.get("memo", ""),
+                        drive_folder_url=folder_url,
+                        drive_file_url=video_record.get("drive_file_url", ""),
+                        thumb_url=thumb_url,
+                        is_selected=False,
+                        config=config,
+                    )
+                except Exception:
+                    pass
+
+        # --- Step 7: スプレッドシート書き込み ---
+        if from_step <= 7:
+            yield emit({"type": "step", "index": 0, "step": 7, "total": total, "name": "スプレッドシート書き込み", "est": "2秒"})
+            try:
+                write_to_spreadsheet(url, product, len(image_paths), folder_url, config)
+                yield emit({"type": "step_done", "index": 0, "step": 7, "data": {"finalized": True}})
+            except Exception as e:
+                yield emit({"type": "step_warn", "index": 0, "step": 7, "message": f"スプレッドシートエラー: {e}"})
+                yield emit({"type": "step_done", "index": 0, "step": 7, "data": {"finalized": False}})
+
+        # product_state を更新して永続化
+        product_state["product"] = product
+        product_state["translated_image_paths"] = translated_image_paths
+        product_state["drive_folder_url"] = folder_url
+        product_state["drive_folder_id"] = folder_id
+        product_state["drive_thumb_url"] = thumb_url
+        if video_record and from_step <= 5:
+            # 新しく生成した動画を追加
+            if "videos" not in product_state:
+                product_state["videos"] = []
+            product_state["videos"].append(video_record)
+            product_state["selected_version"] = video_record["version"]
+        product_state["finalized"] = True
+        product_state["finalized_at"] = now_iso()
+
+        save_batch_state(batch_id)
+
+        yield emit({"type": "all_done", "batch_id": batch_id, "asin": asin})
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @app.get("/files/{asin}/{path:path}")
