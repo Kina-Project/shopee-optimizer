@@ -650,40 +650,58 @@ def generate_video(
 # 6. Google Drive アップロード
 # ============================================================
 
+DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
+
+
 def _get_drive_credentials(config):
-    """Drive API用の認証情報を取得"""
-    from googleapiclient.discovery import build
+    """Drive API用の認証情報を取得（3段階フォールバック）"""
+    errors = []
 
     # 方法1: OAuth2 リフレッシュトークン（Cloud Run用）
     if config.get("drive_refresh_token"):
-        from google.oauth2.credentials import Credentials as OAuthCreds
-        creds = OAuthCreds(
-            token=None,
-            refresh_token=config["drive_refresh_token"],
-            client_id=config["drive_client_id"],
-            client_secret=config["drive_client_secret"],
-            token_uri="https://oauth2.googleapis.com/token",
-        )
-        return creds
+        try:
+            from google.oauth2.credentials import Credentials as OAuthCreds
+            creds = OAuthCreds(
+                token=None,
+                refresh_token=config["drive_refresh_token"],
+                client_id=config["drive_client_id"],
+                client_secret=config["drive_client_secret"],
+                token_uri="https://oauth2.googleapis.com/token",
+                scopes=DRIVE_SCOPES,
+            )
+            # トークンリフレッシュを事前テスト
+            from google.auth.transport.requests import Request
+            creds.refresh(Request())
+            logger.info("Drive認証: OAuth2リフレッシュトークンで成功")
+            return creds
+        except Exception as e:
+            errors.append(f"OAuth2リフレッシュトークン: {e}")
+            logger.warning("Drive認証方法1(OAuth2)失敗: %s", e)
 
     # 方法2: Application Default Credentials
     try:
         import google.auth
-        creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/drive"])
+        creds, _ = google.auth.default(scopes=DRIVE_SCOPES)
+        logger.info("Drive認証: ADCで成功")
         return creds
-    except Exception:
-        pass
+    except Exception as e:
+        errors.append(f"ADC: {e}")
+        logger.debug("Drive認証方法2(ADC)失敗: %s", e)
 
     # 方法3: gcloud CLIのアクセストークン（ローカル開発用）
     try:
         token = subprocess.check_output(
-            ["gcloud", "auth", "print-access-token"], text=True
+            ["gcloud", "auth", "print-access-token"], text=True, timeout=10
         ).strip()
-        from google.oauth2.credentials import Credentials as OAuthCreds
-        return OAuthCreds(token=token)
-    except Exception:
-        pass
+        if token:
+            from google.oauth2.credentials import Credentials as OAuthCreds
+            logger.info("Drive認証: gcloud CLIで成功")
+            return OAuthCreds(token=token)
+    except Exception as e:
+        errors.append(f"gcloud CLI: {e}")
+        logger.debug("Drive認証方法3(gcloud)失敗: %s", e)
 
+    logger.error("Drive認証: 全方法失敗 - %s", "; ".join(errors))
     return None
 
 
@@ -693,6 +711,29 @@ def _get_drive_service(config):
     if not creds:
         return None
     return build("drive", "v3", credentials=creds)
+
+
+def _drive_api_retry(func, max_retries=3):
+    """Google Drive APIコールをリトライ付きで実行（429/500/503対応）"""
+    import time
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            error_str = str(e)
+            resp = getattr(e, 'resp', None)
+            status = getattr(e, 'status_code', None) or (resp.get('status', 0) if isinstance(resp, dict) else getattr(resp, 'status', 0) if resp else 0)
+            retryable = (
+                int(status) in (429, 500, 503)
+                or 'timeout' in error_str.lower()
+                or 'rate limit' in error_str.lower()
+            )
+            if retryable and attempt < max_retries - 1:
+                wait = 2 ** attempt
+                logger.warning("Drive API リトライ %d/%d (%s秒後): %s", attempt + 1, max_retries, wait, e)
+                time.sleep(wait)
+            else:
+                raise
 
 
 def _upload_file_to_drive(drive, file_path, parent_id):
@@ -705,13 +746,18 @@ def _upload_file_to_drive(drive, file_path, parent_id):
         else "application/json" if suffix == ".json"
         else "video/mp4"
     )
-    media = MediaFileUpload(str(file_path), mimetype=mime)
-    return drive.files().create(
-        body={"name": name, "parents": [parent_id]},
-        media_body=media,
-        fields="id, webViewLink",
-        supportsAllDrives=True,
-    ).execute()
+    file_size = Path(file_path).stat().st_size
+    # 5MB以上のファイルはresumableアップロード（動画向け）
+    resumable = file_size > 5 * 1024 * 1024
+    media = MediaFileUpload(str(file_path), mimetype=mime, resumable=resumable)
+    def _do_upload():
+        return drive.files().create(
+            body={"name": name, "parents": [parent_id]},
+            media_body=media,
+            fields="id, webViewLink",
+            supportsAllDrives=True,
+        ).execute()
+    return _drive_api_retry(_do_upload)
 
 
 def _escape_drive_query(value):
@@ -723,14 +769,16 @@ def _find_existing_folder(drive, parent_id, folder_name):
         f"mimeType='application/vnd.google-apps.folder' and trashed=false and "
         f"name='{_escape_drive_query(folder_name)}' and '{_escape_drive_query(parent_id)}' in parents"
     )
-    res = drive.files().list(
-        q=q,
-        pageSize=1,
-        orderBy="modifiedTime desc",
-        fields="files(id, webViewLink)",
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True,
-    ).execute()
+    def _do_list():
+        return drive.files().list(
+            q=q,
+            pageSize=1,
+            orderBy="modifiedTime desc",
+            fields="files(id, webViewLink)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
+    res = _drive_api_retry(_do_list)
     files = res.get("files", [])
     return files[0] if files else None
 
@@ -746,7 +794,11 @@ def upload_to_drive(asin, image_paths, translated_paths, video_path, config=None
 
     drive = _get_drive_service(config)
     if not drive:
-        raise RuntimeError("Google Drive認証に失敗しました。サービスアカウントまたはOAuth設定を確認してください。")
+        raise RuntimeError(
+            "Google Drive認証に失敗しました。以下を確認してください:\n"
+            "- DRIVE_REFRESH_TOKEN / DRIVE_CLIENT_ID / DRIVE_CLIENT_SECRET が正しく設定されているか\n"
+            "- または gcloud auth login が実行済みか（ローカル開発時）"
+        )
 
     existing = _find_existing_folder(drive, parent_id, asin)
     if existing:
@@ -758,11 +810,19 @@ def upload_to_drive(asin, image_paths, translated_paths, video_path, config=None
             "mimeType": "application/vnd.google-apps.folder",
             "parents": [parent_id],
         }
-        folder = drive.files().create(
-            body=folder_meta,
-            fields="id, webViewLink",
-            supportsAllDrives=True,
-        ).execute()
+        def _do_create_folder():
+            return drive.files().create(
+                body=folder_meta,
+                fields="id, webViewLink",
+                supportsAllDrives=True,
+            ).execute()
+        try:
+            folder = _drive_api_retry(_do_create_folder)
+        except Exception as e:
+            raise RuntimeError(
+                f"Driveフォルダ作成に失敗しました（親フォルダID: {parent_id}）。"
+                f"親フォルダへの書き込み権限を確認してください: {e}"
+            )
         folder_id = folder["id"]
         folder_url = folder["webViewLink"]
 
@@ -776,7 +836,9 @@ def upload_to_drive(asin, image_paths, translated_paths, video_path, config=None
             "mimeType": "application/vnd.google-apps.folder",
             "parents": [folder_id],
         }
-        en_folder = drive.files().create(body=en_folder_meta, fields="id", supportsAllDrives=True).execute()
+        def _do_create_en_folder():
+            return drive.files().create(body=en_folder_meta, fields="id", supportsAllDrives=True).execute()
+        en_folder = _drive_api_retry(_do_create_en_folder)
         for img in translated_paths:
             _upload_file_to_drive(drive, img, en_folder["id"])
 
@@ -800,10 +862,19 @@ def upload_file_to_drive_folder(file_path, folder_id, config=None):
         config = get_config()
     drive = _get_drive_service(config)
     if not drive:
-        raise RuntimeError("Google Drive認証に失敗しました。")
+        raise RuntimeError(
+            "Google Drive認証に失敗しました。"
+            "DRIVE_REFRESH_TOKEN等の環境変数を確認してください。"
+        )
     if not folder_id:
         raise RuntimeError("DriveフォルダIDが空です。")
-    uploaded = _upload_file_to_drive(drive, file_path, folder_id)
+    try:
+        uploaded = _upload_file_to_drive(drive, file_path, folder_id)
+    except Exception as e:
+        raise RuntimeError(
+            f"ファイルのDriveアップロードに失敗しました（フォルダID: {folder_id}）。"
+            f"フォルダへの書き込み権限を確認してください: {e}"
+        )
     return uploaded.get("webViewLink", "")
 
 
