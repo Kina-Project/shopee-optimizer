@@ -8,6 +8,7 @@ import re
 import json
 import base64
 import logging
+logger = logging.getLogger(__name__)
 import subprocess
 import shutil
 from pathlib import Path
