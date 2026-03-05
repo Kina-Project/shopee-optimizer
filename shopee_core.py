@@ -298,12 +298,31 @@ def download_supplemental_images(image_urls, output_dir, start_index=0):
 # 3. テキスト翻訳
 # ============================================================
 
-def translate_text(text_ja):
-    """日本語→英語翻訳"""
+def translate_text(text_ja, max_chunk=4500):
+    """日本語→英語翻訳（長文はチャンク分割、失敗時はフォールバック）"""
     if not text_ja:
         return ""
-    translator = GoogleTranslator(source="ja", target="en")
-    return translator.translate(text_ja)
+    try:
+        translator = GoogleTranslator(source="ja", target="en")
+        # deep-translator は約5000文字が上限なので分割
+        if len(text_ja) <= max_chunk:
+            return translator.translate(text_ja) or ""
+        chunks = [text_ja[i:i + max_chunk] for i in range(0, len(text_ja), max_chunk)]
+        return " ".join(translator.translate(c) or "" for c in chunks)
+    except Exception as e:
+        logger.warning("翻訳失敗（フォールバック: 原文返却）: %s", e)
+        return text_ja
+
+
+def _reverse_translate(text_en):
+    """英語→日本語の逆翻訳（失敗時は空文字）"""
+    if not text_en:
+        return ""
+    try:
+        return GoogleTranslator(source="en", target="ja").translate(text_en) or ""
+    except Exception as e:
+        logger.warning("逆翻訳失敗: %s", e)
+        return ""
 
 
 def translate_product(product):
@@ -318,8 +337,7 @@ def translate_product(product):
     if product.get("description_ja"):
         description_en = translate_text(product["description_ja"][:500])
 
-    reverse_translator = GoogleTranslator(source="en", target="ja")
-    title_reverse = reverse_translator.translate(title_en) if title_en else ""
+    title_reverse = _reverse_translate(title_en)
 
     return {
         **product,
