@@ -138,6 +138,14 @@ def ensure_drive_parent_folder_config(config: dict):
     folder_id = (config.get("drive_parent_folder_id") or "").strip()
     if not folder_id:
         raise RuntimeError("DRIVE_PARENT_FOLDER_ID が未設定です。初期設定で保存先親フォルダIDを必ず指定してください。")
+    # Drive認証の事前チェック（処理開始前に失敗を検知）
+    from shopee_core import _get_drive_service
+    drive = _get_drive_service(config)
+    if not drive:
+        raise RuntimeError(
+            "Google Drive認証に失敗しました。環境変数を確認してください: "
+            "DRIVE_REFRESH_TOKEN, DRIVE_CLIENT_ID, DRIVE_CLIENT_SECRET"
+        )
 
 
 def find_local_thumb_url(asin: str) -> str:
@@ -1798,7 +1806,14 @@ async def process_stream(request: Request):
                     raise RuntimeError("DriveフォルダURLが取得できません")
             except Exception as e:
                 logger.warning("Step6 Drive upload failed for %s: %s", asin, e, exc_info=True)
-                yield emit({"type": "error", "index": idx, "step": 6, "message": "Google Driveへのアップロードに失敗しました。"})
+                err_str = str(e)
+                if "認証" in err_str or "credential" in err_str.lower():
+                    msg = "Google Drive認証に失敗しました。管理者に連絡してください。"
+                elif "権限" in err_str or "permission" in err_str.lower() or "403" in err_str:
+                    msg = "Google Driveフォルダへの書き込み権限がありません。フォルダの共有設定を確認してください。"
+                else:
+                    msg = "Google Driveへのアップロードに失敗しました。しばらくしてから再度お試しください。"
+                yield emit({"type": "error", "index": idx, "step": 6, "message": msg})
                 continue
 
             yield emit({"type": "step_done", "index": idx, "step": 6, "data": {"drive_folder_url": folder_url}})
