@@ -2228,7 +2228,8 @@ async def restart_from_step(request: Request):
             if openai_key:
                 total_images = len(image_paths)
                 est_per_image = 45
-                est = f"約{total_images * est_per_image}秒（{total_images}枚）"
+                _est_sec = total_images * est_per_image
+                est = f"約{_est_sec // 60}分{_est_sec % 60}秒（{total_images}枚）" if _est_sec >= 60 else f"約{_est_sec}秒（{total_images}枚）"
                 yield emit({"type": "step", "index": 0, "step": 4, "total": total, "name": "画像テキスト英語化", "est": est})
 
                 en_dir = output_dir / "images_en"
@@ -2289,7 +2290,7 @@ async def restart_from_step(request: Request):
             model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
             video_path = videos_dir / f"{version}.mp4"
 
-            yield emit({"type": "step", "index": 0, "step": 5, "total": total, "name": "動画生成", "est": "30〜120秒"})
+            yield emit({"type": "step", "index": 0, "step": 5, "total": total, "name": "動画生成", "est": "約30秒〜2分"})
             try:
                 out = generate_video(image_paths, product, output_dir, config=config, effect=effect, output_path=video_path)
                 video_path = Path(out) if out else None
@@ -2620,7 +2621,8 @@ async def process_stream(request: Request):
             if openai_key and not skip_image_translate:
                 total_images = len(image_paths)
                 est_per_image = 45  # 秒/枚
-                est = f"約{total_images * est_per_image}秒（{total_images}枚）"
+                _est_sec = total_images * est_per_image
+                est = f"約{_est_sec // 60}分{_est_sec % 60}秒（{total_images}枚）" if _est_sec >= 60 else f"約{_est_sec}秒（{total_images}枚）"
                 yield emit({"type": "step", "index": idx, "step": 4, "total": total, "name": "画像テキスト英語化", "est": est})
 
                 en_dir = output_dir / "images_en"
@@ -2695,7 +2697,7 @@ async def process_stream(request: Request):
             version = "v1"
             video_path = videos_dir / f"{version}.mp4"
 
-            yield emit({"type": "step", "index": idx, "step": 5, "total": total, "name": "動画生成", "est": "30〜120秒"})
+            yield emit({"type": "step", "index": idx, "step": 5, "total": total, "name": "動画生成", "est": "約30秒〜2分"})
             try:
                 out = generate_video(image_paths, product, output_dir, config=config, effect=effect, output_path=video_path)
                 video_path = Path(out) if out else None
@@ -3005,7 +3007,8 @@ async def resume_batch(batch_id: str):
             if openai_key and not skip_image_translate:
                 total_images = len(image_paths)
                 est_per_image = 45
-                est = f"約{total_images * est_per_image}秒（{total_images}枚）"
+                _est_sec = total_images * est_per_image
+                est = f"約{_est_sec // 60}分{_est_sec % 60}秒（{total_images}枚）" if _est_sec >= 60 else f"約{_est_sec}秒（{total_images}枚）"
                 yield emit({"type": "step", "index": idx, "step": 4, "total": total, "name": "画像テキスト英語化", "est": est})
 
                 en_dir = output_dir / "images_en"
@@ -3065,7 +3068,7 @@ async def resume_batch(batch_id: str):
             version = "v1"
             video_path = videos_dir / f"{version}.mp4"
 
-            yield emit({"type": "step", "index": idx, "step": 5, "total": total, "name": "動画生成", "est": "30〜120秒"})
+            yield emit({"type": "step", "index": idx, "step": 5, "total": total, "name": "動画生成", "est": "約30秒〜2分"})
             try:
                 out = generate_video(image_paths, product, output_dir, config=config, effect=effect, output_path=video_path)
                 video_path = Path(out) if out else None
