@@ -285,6 +285,22 @@ def save_batch_state(batch_id: str):
     )
 
 
+def get_batch_or_none(batch_id: str):
+    """BATCH_STOREから取得し、なければファイルから復元する。"""
+    batch = BATCH_STORE.get(batch_id)
+    if batch:
+        return batch
+    path = batch_state_path(batch_id)
+    if path.exists():
+        try:
+            batch = json.loads(path.read_text(encoding="utf-8"))
+            BATCH_STORE[batch_id] = batch
+            return batch
+        except Exception:
+            pass
+    return None
+
+
 def load_batch_store():
     BATCH_STORE.clear()
     if not BATCH_STATE_DIR.exists():
@@ -1629,15 +1645,7 @@ async def list_batches():
 
 @app.get("/batch/{batch_id}")
 async def get_batch(batch_id: str):
-    batch = BATCH_STORE.get(batch_id)
-    if not batch:
-        path = batch_state_path(batch_id)
-        if path.exists():
-            try:
-                batch = json.loads(path.read_text(encoding="utf-8"))
-                BATCH_STORE[batch_id] = batch
-            except Exception:
-                batch = None
+    batch = get_batch_or_none(batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="batch_idが見つかりません")
     return batch
@@ -2042,15 +2050,7 @@ def _build_restart_card_html(batch_id: str, asin: str) -> str:
 
 @app.get("/history/{batch_id}/{asin}", response_class=HTMLResponse)
 async def history_detail_page(batch_id: str, asin: str):
-    batch = BATCH_STORE.get(batch_id)
-    if not batch:
-        path = batch_state_path(batch_id)
-        if path.exists():
-            try:
-                batch = json.loads(path.read_text(encoding="utf-8"))
-                BATCH_STORE[batch_id] = batch
-            except Exception:
-                batch = None
+    batch = get_batch_or_none(batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="batch_idが見つかりません")
 
@@ -2146,15 +2146,7 @@ a{{color:#ee4d2d;text-decoration:none;transition:color .2s}} a:hover{{color:#d43
 @app.get("/api/restartable-steps/{batch_id}/{asin}")
 async def restartable_steps(batch_id: str, asin: str):
     """product_stateを検査し、各ステップの再開可否を返す。"""
-    batch = BATCH_STORE.get(batch_id)
-    if not batch:
-        path = batch_state_path(batch_id)
-        if path.exists():
-            try:
-                batch = json.loads(path.read_text(encoding="utf-8"))
-                BATCH_STORE[batch_id] = batch
-            except Exception:
-                batch = None
+    batch = get_batch_or_none(batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="batch_idが見つかりません")
 
@@ -2207,15 +2199,7 @@ async def restart_from_step(request: Request):
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Google Drive設定エラー: {e}")
 
-    batch = BATCH_STORE.get(batch_id)
-    if not batch:
-        path = batch_state_path(batch_id)
-        if path.exists():
-            try:
-                batch = json.loads(path.read_text(encoding="utf-8"))
-                BATCH_STORE[batch_id] = batch
-            except Exception:
-                batch = None
+    batch = get_batch_or_none(batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="batch_idが見つかりません")
 
@@ -2942,7 +2926,7 @@ async def process_stream(request: Request):
 @app.post("/api/batch/{batch_id}/pause")
 async def pause_batch(batch_id: str):
     """処理中のバッチに一時停止リクエストを送る。現在の商品完了後に停止。"""
-    batch = BATCH_STORE.get(batch_id)
+    batch = get_batch_or_none(batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="バッチが見つかりません")
     BATCH_PAUSE_REQUESTS[batch_id] = True
@@ -2952,7 +2936,7 @@ async def pause_batch(batch_id: str):
 @app.post("/api/batch/{batch_id}/resume")
 async def resume_batch(batch_id: str):
     """中断したバッチを再開する。stopped_at_indexの商品から処理を続行。"""
-    batch = BATCH_STORE.get(batch_id)
+    batch = get_batch_or_none(batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="バッチが見つかりません")
     if not batch.get("stopped_reason"):
@@ -3304,7 +3288,7 @@ async def regenerate_video(request: Request):
     if effect not in EFFECT_PROMPTS:
         raise HTTPException(status_code=400, detail="無効なeffectです")
 
-    batch = BATCH_STORE.get(batch_id)
+    batch = get_batch_or_none(batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="batch_idが見つかりません")
 
@@ -3434,7 +3418,7 @@ async def finalize(request: Request):
     batch_id = data.get("batch_id", "")
     selections = data.get("products", [])
 
-    batch = BATCH_STORE.get(batch_id)
+    batch = get_batch_or_none(batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="batch_idが見つかりません")
 
@@ -3521,7 +3505,7 @@ async def api_add_images(request: Request):
     if not image_urls:
         raise HTTPException(status_code=400, detail="image_urlsが必要です")
 
-    batch = BATCH_STORE.get(batch_id)
+    batch = get_batch_or_none(batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="batch_idが見つかりません")
 
