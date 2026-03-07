@@ -789,8 +789,26 @@ function makeProgressItem(url=''){
     status:'waiting',
     steps:Array(7).fill('pending'),
     stepMessages:{},
+    stepStartedAt:{},
+    stepEst:{},
+    batchStartedAt:null,
   };
 }
+let elapsedTimer=null;
+function startElapsedTimer(){
+  if(elapsedTimer)clearInterval(elapsedTimer);
+  elapsedTimer=setInterval(()=>renderActiveProductPanel(),1000);
+}
+function stopElapsedTimer(){
+  if(elapsedTimer){clearInterval(elapsedTimer);elapsedTimer=null;}
+}
+window.addEventListener('beforeunload',function(e){
+  const btn=document.getElementById('runBtn');
+  if(btn&&btn.disabled){
+    e.preventDefault();
+    e.returnValue='処理中です。ページを離れると進行中の処理が中断されます。';
+  }
+});
 
 function initProgressTabs(urls){
   progressProducts = urls.map(u=>makeProgressItem(u));
@@ -860,11 +878,24 @@ function renderActiveProductPanel(){
       <div style="height:100%;width:${progressPct}%;background:var(--c-brand);border-radius:2px;transition:width .4s ease"></div>
     </div>`;
   const steps=STEP_NAMES.map((name,idx)=>{
+    const stepNum=idx+1;
     const s=p.steps[idx]||'pending';
-    const msg=p.stepMessages[idx+1] ? `<span class="small" style="margin-left:4px">${esc(p.stepMessages[idx+1])}</span>` : '';
-    return `<li><span class="step-dot step-${s}"></span><span style="${stepStatusStyle(s)}">Step${idx+1}</span> <span>${esc(name)}</span> <span style="${stepStatusStyle(s)}">${stepStatusText(s)}</span>${msg}</li>`;
+    const msg=p.stepMessages[stepNum] ? `<span class="small" style="margin-left:4px">${esc(p.stepMessages[stepNum])}</span>` : '';
+    let timeInfo='';
+    if(s==='running' && p.stepStartedAt[stepNum]){
+      const elapsed=Math.floor((Date.now()-p.stepStartedAt[stepNum])/1000);
+      const min=Math.floor(elapsed/60);
+      const sec=elapsed%60;
+      const elapsedStr=min>0?`${min}分${sec}秒`:`${sec}秒`;
+      const estStr=p.stepEst[stepNum]?` / 予測: ${p.stepEst[stepNum]}`:'';
+      timeInfo=`<span class="small" style="margin-left:6px;color:var(--c-warn)">${elapsedStr}経過${estStr}</span>`;
+    }
+    return `<li><span class="step-dot step-${s}"></span><span style="${stepStatusStyle(s)}">Step${idx+1}</span> <span>${esc(name)}</span> <span style="${stepStatusStyle(s)}">${stepStatusText(s)}</span>${timeInfo}${msg}</li>`;
   }).join('');
-  root.innerHTML=`${header}<ul class="steps">${steps}</ul>`;
+  // 処理中の注意バナー
+  const isRunning=p.steps.some(s=>s==='running');
+  const banner=isRunning?'<div style="background:#fef3c7;color:#92400e;padding:8px 12px;border-radius:6px;font-size:12px;margin-bottom:8px;text-align:center">処理中です。ページを更新・移動しないでください。</div>':'';
+  root.innerHTML=`${header}${banner}<ul class="steps">${steps}</ul>`;
 }
 
 async function runBatch(){
@@ -950,7 +981,9 @@ function handleEvent(evt){
     if(!progressProducts[evt.index]) progressProducts[evt.index]=makeProgressItem(evt.url||'');
     progressProducts[evt.index].url=evt.url||progressProducts[evt.index].url;
     progressProducts[evt.index].status='running';
+    progressProducts[evt.index].batchStartedAt=Date.now();
     activeProductIndex=evt.index;
+    startElapsedTimer();
     renderProgressTabs();
     renderActiveProductPanel();
     logLine(`商品 ${evt.index+1}/${evt.total_products} 開始: ${evt.url}`);
@@ -958,6 +991,8 @@ function handleEvent(evt){
     if(progressProducts[evt.index]){
       progressProducts[evt.index].steps[evt.step-1]='running';
       progressProducts[evt.index].stepMessages[evt.step]='';
+      progressProducts[evt.index].stepStartedAt[evt.step]=Date.now();
+      if(evt.est) progressProducts[evt.index].stepEst[evt.step]=evt.est;
       if(evt.step===1 && evt.name) progressProducts[evt.index].title=evt.name;
     }
     renderActiveProductPanel();
@@ -1003,6 +1038,7 @@ function handleEvent(evt){
     logLine(`  [${(evt.index??0)+1}] API残高不足: ${evt.message}`);
     alert(evt.message);
   }else if(evt.type==='batch_stopped'){
+    stopElapsedTimer();
     logLine(`バッチ停止: ${evt.message}`);
     for(let i=(evt.stopped_at_index||0)+1;i<progressProducts.length;i++){
       progressProducts[i].status='skipped';
@@ -1031,6 +1067,7 @@ function handleEvent(evt){
     renderActiveProductPanel();
     logLine(`商品 ${evt.index+1} 完了: ${evt.asin}`);
   }else if(evt.type==='all_done'){
+    stopElapsedTimer();
     reviewProducts=evt.results||reviewProducts;
     activeReviewProductIndex=0;
     renderReview();
