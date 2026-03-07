@@ -16,7 +16,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from shopee_core import (
@@ -1268,9 +1268,23 @@ function driveImgFallback(img,asin,idx){
 }
 function driveVideoFallback(video,driveUrl){
   if(!driveUrl)return;
+  // driveUrlからファイルIDを抽出してプロキシ経由で再生
+  const m=driveUrl.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if(m){
+    const proxyUrl='/drive-video/'+m[1];
+    video.onerror=function(){
+      // プロキシも失敗したらDriveリンクにフォールバック
+      const link=document.createElement('a');
+      link.href=driveUrl;link.target='_blank';
+      link.style.cssText='display:flex;width:300px;height:200px;align-items:center;justify-content:center;background:var(--c-bg);border-radius:var(--radius);color:var(--c-brand);font-size:13px;text-decoration:none;border:1px dashed var(--c-border-light)';
+      link.textContent='Driveで動画を再生 →';
+      video.parentNode.replaceChild(link,video);
+    };
+    video.src=proxyUrl;
+    return;
+  }
   const link=document.createElement('a');
-  link.href=driveUrl;
-  link.target='_blank';
+  link.href=driveUrl;link.target='_blank';
   link.style.cssText='display:flex;width:300px;height:200px;align-items:center;justify-content:center;background:var(--c-bg);border-radius:var(--radius);color:var(--c-brand);font-size:13px;text-decoration:none;border:1px dashed var(--c-border-light)';
   link.textContent='Driveで動画を再生 →';
   video.parentNode.replaceChild(link,video);
@@ -2545,6 +2559,34 @@ async def serve_file(asin: str, path: str):
         ".png": "image/png", ".mp4": "video/mp4", ".json": "application/json",
     }
     return FileResponse(file_path, media_type=media_types.get(suffix, "application/octet-stream"))
+
+
+@app.get("/drive-video/{file_id}")
+async def drive_video_proxy(file_id: str):
+    """Google Driveの動画ファイルをプロキシしてインライン再生可能にする。"""
+    if not re.match(r'^[a-zA-Z0-9_-]+$', file_id):
+        raise HTTPException(status_code=400, detail="Invalid file ID")
+    try:
+        from shopee_core import _get_drive_service
+        config = get_config()
+        drive = _get_drive_service(config)
+        import io
+        from googleapiclient.http import MediaIoBaseDownload
+        request = drive.files().get_media(fileId=file_id)
+        buf = io.BytesIO()
+        downloader = MediaIoBaseDownload(buf, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        buf.seek(0)
+        return Response(
+            content=buf.read(),
+            media_type="video/mp4",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+    except Exception as e:
+        logger.warning("Drive video proxy failed for %s: %s", file_id, e)
+        raise HTTPException(status_code=404, detail="動画を取得できません")
 
 
 @app.post("/process-stream")
