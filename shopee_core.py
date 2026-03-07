@@ -14,8 +14,16 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 
+import time
 import requests
 from deep_translator import GoogleTranslator
+
+
+class QuotaExhaustedError(Exception):
+    """API残高不足・クォータ超過時に発生する例外"""
+    def __init__(self, service: str, message: str = ""):
+        self.service = service
+        super().__init__(message or f"{service} の残高が不足しています。チャージしてください。")
 
 try:
     from openai import OpenAI
@@ -207,6 +215,13 @@ def fetch_amazon_product(asin, api_key):
 
     credits_remaining = data.get("request_info", {}).get("credits_remaining", "?")
 
+    # クレジット残が数値で0以下の場合は警告
+    try:
+        if int(credits_remaining) <= 0:
+            raise QuotaExhaustedError("Rainforest", "Rainforest APIのクレジットが残っていません。プランのアップグレードが必要です。")
+    except (ValueError, TypeError):
+        pass  # "?" などの場合は無視
+
     return {
         "asin": asin,
         "title_ja": title_ja,
@@ -378,20 +393,36 @@ def translate_image_text(openai_key, image_path, output_path, product):
         "Translate all visible Japanese text naturally into English."
     )
 
-    try:
-        response = client.responses.create(
-            model="gpt-4o",
-            input=[{
-                "role": "user",
-                "content": [
-                    {"type": "input_image", "image_url": f"data:image/jpeg;base64,{base64_image}"},
-                    {"type": "input_text", "text": prompt},
-                ],
-            }],
-            tools=[{"type": "image_generation", "size": "1024x1024", "quality": "high"}],
-        )
-    except Exception as e:
-        logging.getLogger(__name__).warning(f"画像翻訳APIエラー ({image_path}): {e}")
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.responses.create(
+                model="gpt-4o",
+                input=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{base64_image}"},
+                        {"type": "input_text", "text": prompt},
+                    ],
+                }],
+                tools=[{"type": "image_generation", "size": "1024x1024", "quality": "high"}],
+            )
+            break  # 成功したらループを抜ける
+        except Exception as e:
+            err_str = str(e).lower()
+            # quota超過（残高不足）は即座に停止
+            if "insufficient_quota" in err_str or "billing" in err_str:
+                raise QuotaExhaustedError("OpenAI", "OpenAI APIの残高が不足しています。チャージしてください。") from e
+            # 一時的なレートリミットはリトライ
+            if ("rate_limit" in err_str or "429" in err_str) and attempt < max_retries - 1:
+                wait = 2 ** attempt  # 1秒, 2秒, 4秒
+                logger.info(f"OpenAI レートリミット、{wait}秒後にリトライ ({attempt + 1}/{max_retries})")
+                time.sleep(wait)
+                continue
+            logger.warning(f"画像翻訳APIエラー ({image_path}): {e}")
+            return False
+    else:
+        logger.warning(f"画像翻訳リトライ上限到達 ({image_path})")
         return False
 
     for output in response.output:
@@ -405,16 +436,26 @@ def translate_image_text(openai_key, image_path, output_path, product):
 
 
 def translate_images(openai_key, image_paths, output_dir, product):
-    """全画像のテキストを英語化"""
+    """全画像のテキストを英語化。QuotaExhaustedErrorは呼び出し元へ伝播する。"""
     en_dir = output_dir / "images_en"
     en_dir.mkdir(exist_ok=True)
 
     translated_paths = []
+    consecutive_failures = 0
+    max_consecutive_failures = 2
+
     for i, img_path in enumerate(image_paths):
         out_path = en_dir / f"{img_path.stem}_en.png"
+        # QuotaExhaustedErrorはここで捕捉せず呼び出し元へ伝播
         success = translate_image_text(openai_key, str(img_path), str(out_path), product)
         if success:
             translated_paths.append(out_path)
+            consecutive_failures = 0
+        else:
+            consecutive_failures += 1
+            if consecutive_failures >= max_consecutive_failures:
+                logger.warning(f"画像翻訳が{max_consecutive_failures}回連続失敗。残り{len(image_paths) - i - 1}枚をスキップします。")
+                break
 
     return translated_paths
 
@@ -602,11 +643,18 @@ def generate_video_ai(image_path, prompt, model="hailuo", negative_prompt="", du
     if model_config["supports_negative"] and negative_prompt:
         arguments["negative_prompt"] = negative_prompt
 
-    result = fal_client.subscribe(
-        model_config["model_id"],
-        arguments=arguments,
-        with_logs=True,
-    )
+    try:
+        result = fal_client.subscribe(
+            model_config["model_id"],
+            arguments=arguments,
+            with_logs=True,
+        )
+    except Exception as e:
+        err_str = str(e).lower()
+        if any(kw in err_str for kw in ("insufficient", "balance", "credit", "quota", "payment", "billing")):
+            raise QuotaExhaustedError("fal.ai", "fal.ai の残高が不足しています。チャージしてください。") from e
+        raise
+
     video_url = result.get("video", {}).get("url")
     if not video_url:
         raise RuntimeError(f"動画URLが取得できません: {result}")
@@ -802,8 +850,8 @@ def _find_existing_folder(drive, parent_id, folder_name):
     return files[0] if files else None
 
 
-def upload_to_drive(asin, image_paths, translated_paths, video_path, config=None, return_meta=False):
-    """画像・動画をGoogle DriveにASIN別フォルダでアップロード"""
+def ensure_drive_folder(asin, config=None):
+    """ASINフォルダをDriveに作成（既存なら再利用）。folder_id, folder_url, driveオブジェクトを返す。"""
     if config is None:
         config = get_config()
 
@@ -845,25 +893,50 @@ def upload_to_drive(asin, image_paths, translated_paths, video_path, config=None
         folder_id = folder["id"]
         folder_url = folder["webViewLink"]
 
+    return {"folder_id": folder_id, "folder_url": folder_url, "drive": drive}
+
+
+def upload_images_to_drive(drive, image_paths, folder_id):
+    """元画像をDriveフォルダへアップロード。アップロード結果リストを返す。"""
     image_items = []
     for img in image_paths:
         image_items.append(_upload_file_to_drive(drive, img, folder_id))
+    return image_items
 
-    if translated_paths:
-        en_folder_meta = {
-            "name": "images_en",
-            "mimeType": "application/vnd.google-apps.folder",
-            "parents": [folder_id],
-        }
-        def _do_create_en_folder():
-            return drive.files().create(body=en_folder_meta, fields="id", supportsAllDrives=True).execute()
-        en_folder = _drive_api_retry(_do_create_en_folder)
-        for img in translated_paths:
-            _upload_file_to_drive(drive, img, en_folder["id"])
 
-    video_item = {}
-    if video_path and Path(video_path).exists():
-        video_item = _upload_file_to_drive(drive, video_path, folder_id)
+def upload_translated_images_to_drive(drive, translated_paths, folder_id):
+    """翻訳画像をDriveのimages_enサブフォルダへアップロード。"""
+    if not translated_paths:
+        return
+    en_folder_meta = {
+        "name": "images_en",
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [folder_id],
+    }
+    def _do_create_en_folder():
+        return drive.files().create(body=en_folder_meta, fields="id", supportsAllDrives=True).execute()
+    en_folder = _drive_api_retry(_do_create_en_folder)
+    for img in translated_paths:
+        _upload_file_to_drive(drive, img, en_folder["id"])
+
+
+def upload_video_to_drive(drive, video_path, folder_id):
+    """動画をDriveフォルダへアップロード。アップロード結果を返す。"""
+    if not video_path or not Path(video_path).exists():
+        return {}
+    return _upload_file_to_drive(drive, video_path, folder_id)
+
+
+def upload_to_drive(asin, image_paths, translated_paths, video_path, config=None, return_meta=False):
+    """画像・動画をGoogle DriveにASIN別フォルダでアップロード（後方互換用）"""
+    result = ensure_drive_folder(asin, config)
+    folder_id = result["folder_id"]
+    folder_url = result["folder_url"]
+    drive = result["drive"]
+
+    image_items = upload_images_to_drive(drive, image_paths, folder_id)
+    upload_translated_images_to_drive(drive, translated_paths, folder_id)
+    video_item = upload_video_to_drive(drive, video_path, folder_id)
 
     if return_meta:
         return {
