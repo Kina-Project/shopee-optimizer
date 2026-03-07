@@ -280,12 +280,21 @@ def download_images(image_urls, output_dir):
 # ============================================================
 
 def search_google_images(query, num=10):
+    """画像検索（Google CSE → DuckDuckGoフォールバック）"""
+    # 1. Google Custom Search APIを試す
+    results = _search_google_cse(query, num)
+    if results:
+        return results
+    # 2. フォールバック: DuckDuckGo画像検索
+    return _search_duckduckgo_images(query, num)
+
+
+def _search_google_cse(query, num=10):
     """Google Custom Search APIで商品画像を検索"""
     api_key = os.environ.get("GOOGLE_CSE_API_KEY", "").strip()
     cx = os.environ.get("GOOGLE_CSE_CX", "").strip()
     if not api_key or not cx:
         return []
-
     params = {
         "key": api_key,
         "cx": cx,
@@ -301,7 +310,6 @@ def search_google_images(query, num=10):
         data = resp.json()
     except Exception:
         return []
-
     results = []
     for item in data.get("items", []):
         results.append({
@@ -311,6 +319,39 @@ def search_google_images(query, num=10):
             "context_url": item.get("image", {}).get("contextLink", ""),
             "width": item.get("image", {}).get("width", 0),
             "height": item.get("image", {}).get("height", 0),
+        })
+    return results
+
+
+def _search_duckduckgo_images(query, num=10):
+    """DuckDuckGo画像検索（APIキー不要）"""
+    import re
+    session = requests.Session()
+    session.headers.update({"User-Agent": HEADERS["User-Agent"]})
+    try:
+        resp = session.get("https://duckduckgo.com/", params={"q": query}, timeout=10)
+        vqd_match = re.search(r'vqd="([^"]+)"', resp.text) or re.search(r"vqd=([^&]+)", resp.text)
+        if not vqd_match:
+            resp = session.post("https://duckduckgo.com", data={"q": query}, timeout=10)
+            vqd_match = re.search(r'vqd="([^"]+)"', resp.text) or re.search(r"vqd=([^&]+)", resp.text)
+        if not vqd_match:
+            return []
+        vqd = vqd_match.group(1)
+        img_resp = session.get("https://duckduckgo.com/i.js", params={
+            "l": "jp-jp", "o": "json", "q": query, "vqd": vqd, "f": ",,,", "p": "1",
+        }, timeout=10)
+        data = img_resp.json()
+    except Exception:
+        return []
+    results = []
+    for item in data.get("results", [])[:num]:
+        results.append({
+            "url": item.get("image", ""),
+            "title": item.get("title", ""),
+            "thumbnail": item.get("thumbnail", ""),
+            "context_url": item.get("source", ""),
+            "width": item.get("width", 0),
+            "height": item.get("height", 0),
         })
     return results
 
