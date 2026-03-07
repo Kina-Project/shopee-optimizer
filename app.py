@@ -247,6 +247,31 @@ def drive_thumb_url(file_id: str) -> str:
     return f"https://drive.google.com/thumbnail?id={file_id}&sz=w400"
 
 
+def write_step_checkpoint(
+    url: str,
+    product: dict,
+    image_count: int,
+    folder_url: str,
+    config: dict,
+    status: str,
+) -> str:
+    """各ステップ完了時の中間状態をシートへ保存する。失敗時はエラーメッセージを返す。"""
+    try:
+        ok = write_to_spreadsheet(
+            url,
+            product,
+            image_count,
+            folder_url,
+            config,
+            status=status,
+        )
+        if not ok:
+            return "スプレッドシートへの中間保存に失敗しました（認証/設定を確認してください）"
+        return ""
+    except Exception as e:
+        return str(e)
+
+
 def parse_ts(value: str) -> datetime:
     if not value:
         return datetime.min
@@ -2260,6 +2285,16 @@ async def restart_from_step(request: Request):
                     "features_en": product.get("features_en", []),
                 }
             })
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                len(image_paths),
+                product_state.get("drive_folder_url", ""),
+                config,
+                "Step3完了: 英語翻訳 + 逆翻訳",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": 0, "step": 3, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
         # --- Step 4: 画像テキスト英語化（1枚ずつ進捗報告） ---
         if from_step <= 4:
@@ -2325,6 +2360,16 @@ async def restart_from_step(request: Request):
                     "type": "step_done", "index": 0, "step": 4,
                     "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}
                 })
+                checkpoint_err = write_step_checkpoint(
+                    url,
+                    product,
+                    len(image_paths),
+                    product_state.get("drive_folder_url", ""),
+                    config,
+                    "Step4完了: 画像テキスト英語化",
+                )
+                if checkpoint_err:
+                    yield emit({"type": "step_warn", "index": 0, "step": 4, "message": f"シート中間記録エラー: {checkpoint_err}"})
             else:
                 yield emit({"type": "step_skip", "index": 0, "step": 4, "name": "画像テキスト英語化", "reason": "OpenAIキー未設定"})
 
@@ -2368,6 +2413,17 @@ async def restart_from_step(request: Request):
                 "type": "step_done", "index": 0, "step": 5,
                 "data": {"video_url": video_record["video_url"] if video_record else None}
             })
+            step5_status = "Step5完了: 動画生成" if video_record else "Step5完了: 動画生成（未生成）"
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                len(image_paths),
+                product_state.get("drive_folder_url", ""),
+                config,
+                step5_status,
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": 0, "step": 5, "message": f"シート中間記録エラー: {checkpoint_err}"})
         else:
             # Step 6以降から開始の場合、既存の最新動画を使う
             existing_videos = product_state.get("videos", [])
@@ -2405,6 +2461,16 @@ async def restart_from_step(request: Request):
                 return
 
             yield emit({"type": "step_done", "index": 0, "step": 6, "data": {"drive_folder_url": folder_url}})
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                len(image_paths),
+                folder_url,
+                config,
+                "Step6完了: Google Driveアップロード",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": 0, "step": 6, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             if video_record:
                 try:
@@ -2428,7 +2494,7 @@ async def restart_from_step(request: Request):
         if from_step <= 7:
             yield emit({"type": "step", "index": 0, "step": 7, "total": total, "name": "スプレッドシート書き込み", "est": "2秒"})
             try:
-                write_to_spreadsheet(url, product, len(image_paths), folder_url, config)
+                write_to_spreadsheet(url, product, len(image_paths), folder_url, config, status="完了")
                 yield emit({"type": "step_done", "index": 0, "step": 7, "data": {"finalized": True}})
             except Exception as e:
                 yield emit({"type": "step_warn", "index": 0, "step": 7, "message": f"スプレッドシートエラー: {e}"})
@@ -2617,6 +2683,16 @@ async def process_stream(request: Request):
                     "credits_remaining": product.get("credits_remaining", "?"),
                 }
             })
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                0,
+                folder_url,
+                config,
+                "Step1完了: Amazon商品情報を取得",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 1, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             # Step 2: 画像ダウンロード + 即座にDrive保存
             yield emit({"type": "step", "index": idx, "step": 2, "total": total, "name": "画像ダウンロード", "est": "3秒"})
@@ -2649,6 +2725,16 @@ async def process_stream(request: Request):
                 "image_shortage": image_shortage,
             }
             yield emit({"type": "step_done", "index": idx, "step": 2, "data": step2_data})
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                image_count,
+                folder_url,
+                config,
+                "Step2完了: 画像ダウンロード",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 2, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             if image_shortage:
                 yield emit({
@@ -2673,6 +2759,16 @@ async def process_stream(request: Request):
                     "features_en": product.get("features_en", []),
                 }
             })
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                image_count,
+                folder_url,
+                config,
+                "Step3完了: 英語翻訳 + 逆翻訳",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 3, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             # Step 4: 画像テキスト英語化 + 即座にDrive保存（1枚ずつ進捗報告）
             translated_image_paths = []
@@ -2754,6 +2850,16 @@ async def process_stream(request: Request):
                     "type": "step_done", "index": idx, "step": 4,
                     "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}
                 })
+                checkpoint_err = write_step_checkpoint(
+                    url,
+                    product,
+                    image_count,
+                    folder_url,
+                    config,
+                    "Step4完了: 画像テキスト英語化",
+                )
+                if checkpoint_err:
+                    yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"シート中間記録エラー: {checkpoint_err}"})
             else:
                 yield emit({"type": "step_skip", "index": idx, "step": 4, "name": "画像テキスト英語化", "reason": "OpenAIキー未設定またはスキップ指定"})
 
@@ -2814,6 +2920,17 @@ async def process_stream(request: Request):
                 "type": "step_done", "index": idx, "step": 5,
                 "data": {"video_url": video_record["video_url"] if video_record else None}
             })
+            step5_status = "Step5完了: 動画生成" if video_record else "Step5完了: 動画生成（未生成）"
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                image_count,
+                folder_url,
+                config,
+                step5_status,
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 5, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             # Step 6: Drive保存確認（逐次保存済みなので確認のみ）
             yield emit({"type": "step", "index": idx, "step": 6, "total": total, "name": "Google Drive保存確認", "est": "2秒"})
@@ -2847,6 +2964,16 @@ async def process_stream(request: Request):
                     continue
 
             yield emit({"type": "step_done", "index": idx, "step": 6, "data": {"drive_folder_url": folder_url}})
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                image_count,
+                folder_url,
+                config,
+                "Step6完了: Google Drive保存確認",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 6, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             if video_record:
                 try:
@@ -2869,7 +2996,7 @@ async def process_stream(request: Request):
             # Step 7: スプレッドシート書き込み
             yield emit({"type": "step", "index": idx, "step": 7, "total": total, "name": "スプレッドシート書き込み", "est": "2秒"})
             try:
-                write_to_spreadsheet(url, product, len(image_paths), folder_url, config)
+                write_to_spreadsheet(url, product, len(image_paths), folder_url, config, status="完了")
                 yield emit({"type": "step_done", "index": idx, "step": 7, "data": {"finalized": auto_finalize}})
             except Exception as e:
                 yield emit({"type": "step_warn", "index": idx, "step": 7, "message": f"スプレッドシートエラー: {e}"})
@@ -3032,6 +3159,16 @@ async def resume_batch(batch_id: str):
                     "price": product.get("price", ""),
                 }
             })
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                0,
+                folder_url,
+                config,
+                "Step1完了: Amazon商品情報を取得",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 1, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             # Driveフォルダ作成
             try:
@@ -3068,6 +3205,16 @@ async def resume_batch(batch_id: str):
                     logger.warning("Resume Step2 Drive保存失敗: %s", e)
 
             yield emit({"type": "step_done", "index": idx, "step": 2, "data": {"image_count": image_count, "image_urls": image_urls, "image_shortage": image_shortage}})
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                image_count,
+                folder_url,
+                config,
+                "Step2完了: 画像ダウンロード",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 2, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             if image_shortage:
                 yield emit({"type": "step_warn", "index": idx, "step": 2, "message": f"画像が{image_count}枚のみです（3枚未満）。レビュー画面から補完検索できます。"})
@@ -3089,6 +3236,16 @@ async def resume_batch(batch_id: str):
                     "features_en": product.get("features_en", []),
                 }
             })
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                image_count,
+                folder_url,
+                config,
+                "Step3完了: 英語翻訳 + 逆翻訳",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 3, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             # Step 4: 画像テキスト英語化
             translated_image_paths = []
@@ -3155,6 +3312,16 @@ async def resume_batch(batch_id: str):
 
                 translated_image_urls = [f"/files/{asin}/images_en/{Path(p).name}" for p in translated_image_paths]
                 yield emit({"type": "step_done", "index": idx, "step": 4, "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}})
+                checkpoint_err = write_step_checkpoint(
+                    url,
+                    product,
+                    image_count,
+                    folder_url,
+                    config,
+                    "Step4完了: 画像テキスト英語化",
+                )
+                if checkpoint_err:
+                    yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"シート中間記録エラー: {checkpoint_err}"})
             else:
                 yield emit({"type": "step_skip", "index": idx, "step": 4, "name": "画像テキスト英語化", "reason": "OpenAIキー未設定またはスキップ指定"})
 
@@ -3202,10 +3369,35 @@ async def resume_batch(batch_id: str):
                     logger.info("Resume Step5: 動画をDriveに保存完了")
                 except Exception as e:
                     logger.warning("Resume Step5 Drive保存失敗: %s", e)
+            yield emit({
+                "type": "step_done", "index": idx, "step": 5,
+                "data": {"video_url": video_record["video_url"] if video_record else None}
+            })
+            step5_status = "Step5完了: 動画生成" if video_record else "Step5完了: 動画生成（未生成）"
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                image_count,
+                folder_url,
+                config,
+                step5_status,
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 5, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             # Step 6: Drive確認
             yield emit({"type": "step", "index": idx, "step": 6, "total": total, "name": "Driveアップロード確認", "est": "2秒"})
             yield emit({"type": "step_done", "index": idx, "step": 6, "data": {"drive_folder_url": folder_url, "drive_thumb_url": thumb_url}})
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                image_count,
+                folder_url,
+                config,
+                "Step6完了: Driveアップロード確認",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 6, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             if video_record:
                 try:
@@ -3222,7 +3414,7 @@ async def resume_batch(batch_id: str):
             # Step 7: スプレッドシート書き込み
             yield emit({"type": "step", "index": idx, "step": 7, "total": total, "name": "スプレッドシート書き込み", "est": "2秒"})
             try:
-                write_to_spreadsheet(url, product, len(image_paths), folder_url, config)
+                write_to_spreadsheet(url, product, len(image_paths), folder_url, config, status="完了")
                 yield emit({"type": "step_done", "index": idx, "step": 7, "data": {"finalized": auto_finalize}})
             except Exception as e:
                 yield emit({"type": "step_warn", "index": idx, "step": 7, "message": f"スプレッドシートエラー: {e}"})
@@ -3441,6 +3633,7 @@ async def finalize(request: Request):
                 len(product.get("image_paths", [])),
                 folder_url,
                 config,
+                status="完了(確定)",
             )
             selected_video = next(
                 (v for v in product.get("videos", []) if v.get("version") == product.get("selected_version")),
