@@ -32,6 +32,7 @@ from shopee_core import (
     translate_product,
     translate_images,
     translate_image_text,
+    has_japanese_text,
     generate_video,
     ensure_drive_folder,
     upload_images_to_drive,
@@ -2257,6 +2258,15 @@ async def restart_from_step(request: Request):
 
                 for img_i, img_path in enumerate(image_paths):
                     out_path = en_dir / f"{Path(img_path).stem}_en.png"
+                    if not has_japanese_text(openai_key, str(img_path)):
+                        logger.info("テキストなし、翻訳スキップ: %s", Path(img_path).name)
+                        shutil.copy2(str(img_path), str(out_path))
+                        translated_image_paths.append(str(out_path))
+                        consecutive_failures = 0
+                        elapsed = time.time() - step4_start
+                        completed = img_i + 1
+                        yield emit({"type": "step_progress", "index": 0, "step": 4, "completed": completed, "total_items": total_images, "elapsed_sec": round(elapsed, 1), "est_remaining_sec": 0})
+                        continue
                     try:
                         success = translate_image_text(openai_key, str(img_path), str(out_path), product)
                     except QuotaExhaustedError as e:
@@ -2650,6 +2660,15 @@ async def process_stream(request: Request):
 
                 for img_i, img_path in enumerate(image_paths):
                     out_path = en_dir / f"{img_path.stem}_en.png"
+                    if not has_japanese_text(openai_key, str(img_path)):
+                        logger.info("テキストなし、翻訳スキップ: %s", Path(img_path).name)
+                        shutil.copy2(str(img_path), str(out_path))
+                        translated_image_paths.append(out_path)
+                        consecutive_failures = 0
+                        elapsed = time.time() - step4_start
+                        completed = img_i + 1
+                        yield emit({"type": "step_progress", "index": idx, "step": 4, "completed": completed, "total_items": total_images, "elapsed_sec": round(elapsed, 1), "est_remaining_sec": 0})
+                        continue
                     try:
                         success = translate_image_text(openai_key, str(img_path), str(out_path), product)
                     except QuotaExhaustedError as e:
@@ -3038,6 +3057,15 @@ async def resume_batch(batch_id: str):
 
                 for img_i, img_path in enumerate(image_paths):
                     out_path = en_dir / f"{img_path.stem}_en.png"
+                    if not has_japanese_text(openai_key, str(img_path)):
+                        logger.info("テキストなし、翻訳スキップ: %s", Path(img_path).name)
+                        shutil.copy2(str(img_path), str(out_path))
+                        translated_image_paths.append(out_path)
+                        consecutive_failures = 0
+                        elapsed = time.time() - step4_start
+                        completed = img_i + 1
+                        yield emit({"type": "step_progress", "index": idx, "step": 4, "completed": completed, "total_items": total_images, "elapsed_sec": round(elapsed, 1), "est_remaining_sec": 0})
+                        continue
                     try:
                         success = translate_image_text(openai_key, str(img_path), str(out_path), product)
                     except QuotaExhaustedError as e:
