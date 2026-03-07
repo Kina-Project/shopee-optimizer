@@ -18,6 +18,12 @@ import time
 import requests
 from deep_translator import GoogleTranslator
 
+try:
+    from PIL import Image
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
+
 
 class QuotaExhaustedError(Exception):
     """API残高不足・クォータ超過時に発生する例外"""
@@ -237,8 +243,26 @@ def fetch_amazon_product(asin, api_key):
 # 2. 画像ダウンロード
 # ============================================================
 
+def _ensure_min_size(filepath, min_size=800):
+    """画像が min_size×min_size 未満の場合、短辺基準でリサイズ（アスペクト比維持）。
+    Pillow がなければスキップ。"""
+    if not HAS_PIL:
+        return
+    try:
+        with Image.open(filepath) as img:
+            w, h = img.size
+            if w >= min_size and h >= min_size:
+                return
+            scale = max(min_size / w, min_size / h)
+            new_w, new_h = int(w * scale), int(h * scale)
+            resized = img.resize((new_w, new_h), Image.LANCZOS)
+            resized.save(filepath)
+    except Exception as e:
+        logger.warning("画像リサイズ失敗（スキップ）: %s - %s", filepath, e)
+
+
 def download_images(image_urls, output_dir):
-    """画像をダウンロード"""
+    """画像をダウンロード + 最低800px保証"""
     paths = []
     for i, url in enumerate(image_urls):
         ext = "png" if ".png" in url.lower() else "jpg"
@@ -246,6 +270,7 @@ def download_images(image_urls, output_dir):
         resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
         filepath.write_bytes(resp.content)
+        _ensure_min_size(filepath)
         paths.append(filepath)
     return paths
 
@@ -291,7 +316,7 @@ def search_google_images(query, num=10):
 
 
 def download_supplemental_images(image_urls, output_dir, start_index=0):
-    """追加画像をダウンロード。既存のimagesフォルダに追記"""
+    """追加画像をダウンロード + 最低800px保証。既存のimagesフォルダに追記"""
     images_dir = Path(output_dir) / "images"
     images_dir.mkdir(exist_ok=True)
     paths = []
@@ -303,6 +328,7 @@ def download_supplemental_images(image_urls, output_dir, start_index=0):
             resp = requests.get(url, headers=HEADERS, timeout=15)
             resp.raise_for_status()
             filepath.write_bytes(resp.content)
+            _ensure_min_size(filepath)
             paths.append(filepath)
         except Exception:
             continue
@@ -340,9 +366,39 @@ def _reverse_translate(text_en):
         return ""
 
 
+def _shorten_title(title_en, brand="", max_len=100):
+    """英語タイトルを max_len 文字以内に短縮する。
+    1) OpenAI で要約  2) 失敗時は単純トリム"""
+    if len(title_en) <= max_len:
+        return title_en
+    if HAS_OPENAI and os.environ.get("OPENAI_API_KEY"):
+        try:
+            client = OpenAI()
+            prompt = (
+                f"Shorten the following product title to {max_len} characters or less. "
+                "Keep the brand name at the beginning and preserve key product information. "
+                "Return ONLY the shortened title, nothing else.\n\n"
+                f"Title: {title_en}"
+            )
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=200,
+                temperature=0.3,
+            )
+            shortened = resp.choices[0].message.content.strip().strip('"')
+            if 0 < len(shortened) <= max_len:
+                return shortened
+        except Exception as e:
+            logger.warning("タイトル短縮失敗（フォールバック: 単純トリム）: %s", e)
+    # フォールバック: 単純トリム
+    return title_en[:max_len].rsplit(" ", 1)[0] if " " in title_en[:max_len] else title_en[:max_len]
+
+
 def translate_product(product):
-    """商品情報を英語翻訳 + 逆翻訳"""
+    """商品情報を英語翻訳 + 逆翻訳 + タイトル100文字制御"""
     title_en = translate_text(product["title_ja"])
+    title_en = _shorten_title(title_en, brand=product.get("brand", ""))
 
     features_en = []
     for f in product["features"][:5]:
