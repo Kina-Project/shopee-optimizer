@@ -900,6 +900,69 @@ function renderActiveProductPanel(){
   root.innerHTML=`${header}${banner}<ul class="steps">${steps}</ul>`;
 }
 
+async function resumeBatch(batchId){
+  if(!confirm('APIチャージ済みですか？バッチ処理を再開します。')) return;
+  const resumeBar=document.getElementById('batchResumeBar');
+  if(resumeBar) resumeBar.remove();
+  const btn=document.getElementById('runBtn');
+  btn.disabled=true;
+  btn.innerHTML='<span class="btn-spinner"></span>再開中...';
+
+  // スキップ状態の商品をpendingに戻す
+  for(let i=0;i<progressProducts.length;i++){
+    if(progressProducts[i].status==='skipped'){
+      progressProducts[i].status='pending';
+      progressProducts[i].steps=progressProducts[i].steps.map(s=>s==='skip'?'pending':s);
+    }
+    // エラーで止まった商品もpendingに戻す
+    if(progressProducts[i].status==='error'){
+      progressProducts[i].status='pending';
+      for(let j=0;j<progressProducts[i].steps.length;j++){
+        if(progressProducts[i].steps[j]==='error') progressProducts[i].steps[j]='pending';
+      }
+    }
+  }
+  renderProgressTabs();
+  renderActiveProductPanel();
+  startElapsedTimer();
+  document.getElementById('progressText').textContent='バッチ再開中...';
+
+  try{
+    const res=await fetch(`/api/batch/${batchId}/resume`,{method:'POST'});
+    const reader=res.body.getReader();
+    const dec=new TextDecoder();
+    let buf='';
+    function read(){
+      reader.read().then(({done,value})=>{
+        if(done){
+          stopElapsedTimer();
+          btn.disabled=false;btn.textContent='一括処理開始';
+          document.getElementById('progressText').textContent='再開処理完了';
+          return;
+        }
+        buf+=dec.decode(value,{stream:true});
+        const lines=buf.split('\\n');
+        buf=lines.pop()||'';
+        for(const line of lines){
+          if(!line.startsWith('data: '))continue;
+          try{
+            const evt=JSON.parse(line.slice(6));
+            lastStreamEventAt=Date.now();
+            currentBatchId=evt.batch_id||currentBatchId;
+            handleEvent(evt);
+          }catch(e){}
+        }
+        read();
+      });
+    }
+    read();
+  }catch(e){
+    alert('再開エラー: '+e.message);
+    btn.disabled=false;btn.textContent='一括処理開始';
+    stopElapsedTimer();
+  }
+}
+
 async function runBatch(){
   const urls=collectInputUrls();
   if(!urls.length){alert('URLを入力してください');return}
@@ -1057,6 +1120,24 @@ function handleEvent(evt){
     }
     renderProgressTabs();
     renderActiveProductPanel();
+    // 再開ボタンを表示
+    const stoppedBatchId=evt.batch_id||currentBatchId;
+    if(stoppedBatchId){
+      const resumeDiv=document.createElement('div');
+      resumeDiv.id='batchResumeBar';
+      resumeDiv.style.cssText='background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:16px;margin:12px 0;text-align:center;';
+      resumeDiv.innerHTML=`
+        <p style="margin:0 0 10px;color:#92400e;font-weight:600">${esc(evt.message)}</p>
+        <button id="resumeBatchBtn" onclick="resumeBatch('${esc(stoppedBatchId)}')"
+          style="background:var(--c-brand);color:#fff;border:none;padding:10px 28px;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">
+          チャージ後にバッチ再開
+        </button>
+      `;
+      const panel=document.getElementById('progressPanel');
+      if(panel) panel.parentNode.insertBefore(resumeDiv,panel.nextSibling);
+    }
+    const btn=document.getElementById('runBtn');
+    if(btn){btn.disabled=false;btn.textContent='一括処理開始';}
   }else if(evt.type==='error'){
     if(progressProducts[evt.index]){
       if(evt.step>=1 && evt.step<=7){
@@ -2401,6 +2482,7 @@ async def process_stream(request: Request):
         BATCH_STORE[batch_id] = {
             "batch_id": batch_id,
             "created_at": now_iso(),
+            "urls": urls,
             "results": results,
             "auto_finalize": auto_finalize,
         }
@@ -2437,6 +2519,7 @@ async def process_stream(request: Request):
                     yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
                 BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
                 BATCH_STORE[batch_id]["stopped_at_index"] = idx
+                BATCH_STORE[batch_id]["stopped_at_step"] = 1
                 save_batch_state(batch_id)
                 return
             except ValueError as e:
@@ -2557,6 +2640,7 @@ async def process_stream(request: Request):
                             yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
                         BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
                         BATCH_STORE[batch_id]["stopped_at_index"] = idx
+                        BATCH_STORE[batch_id]["stopped_at_step"] = 4
                         save_batch_state(batch_id)
                         return
                     except Exception as e:
@@ -2625,6 +2709,7 @@ async def process_stream(request: Request):
                     yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
                 BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
                 BATCH_STORE[batch_id]["stopped_at_index"] = idx
+                BATCH_STORE[batch_id]["stopped_at_step"] = 5
                 save_batch_state(batch_id)
                 return
             except Exception as e:
@@ -2765,6 +2850,324 @@ async def process_stream(request: Request):
             "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
         },
+    )
+
+
+@app.post("/api/batch/{batch_id}/resume")
+async def resume_batch(batch_id: str):
+    """残高不足で中断したバッチを再開する。stopped_at_indexの商品から処理を続行。"""
+    batch = BATCH_STORE.get(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="バッチが見つかりません")
+    if not batch.get("stopped_reason"):
+        raise HTTPException(status_code=400, detail="このバッチは停止状態ではありません")
+
+    urls = batch.get("urls", [])
+    stopped_at_index = batch.get("stopped_at_index", 0)
+    auto_finalize = batch.get("auto_finalize", False)
+    existing_results = batch.get("results", [])
+
+    if not urls:
+        raise HTTPException(status_code=400, detail="再開対象のURLがありません")
+
+    # 停止状態をクリア
+    batch.pop("stopped_reason", None)
+    batch.pop("stopped_at_index", None)
+    batch.pop("stopped_at_step", None)
+    save_batch_state(batch_id)
+
+    remaining_urls = urls[stopped_at_index:]
+
+    def generate():
+        config = get_config()
+        output_base = config["output_base"]
+        openai_key = config.get("openai_key", "")
+        rainforest_key = config.get("rainforest_key", "")
+        skip_image_translate = config.get("skip_image_translate", False)
+        started = datetime.now()
+        est_total = len(remaining_urls) * EST_PER_PRODUCT_SEC
+        results = list(existing_results)
+
+        def emit(payload):
+            elapsed = int((datetime.now() - started).total_seconds())
+            payload["batch_id"] = batch_id
+            payload["remaining_sec"] = max(0, est_total - elapsed)
+            return sse_event(payload)
+
+        for resume_i, url in enumerate(remaining_urls):
+            idx = stopped_at_index + resume_i
+            yield emit({"type": "product_start", "index": idx, "total_products": len(urls), "url": url})
+
+            total = 7
+            folder_url = ""
+            folder_id = ""
+            drive_obj = None
+            thumb_url = ""
+
+            # Step 1: Amazon商品情報を取得
+            yield emit({"type": "step", "index": idx, "step": 1, "total": total, "name": "Amazon商品情報を取得", "est": "5秒"})
+            try:
+                asin = extract_asin(url)
+                product = fetch_amazon_product(asin, rainforest_key)
+            except QuotaExhaustedError as e:
+                yield emit({"type": "quota_exhausted", "index": idx, "step": 1, "service": e.service, "message": str(e)})
+                remaining = len(urls) - idx - 1
+                if remaining > 0:
+                    yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
+                BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
+                BATCH_STORE[batch_id]["stopped_at_index"] = idx
+                BATCH_STORE[batch_id]["stopped_at_step"] = 1
+                save_batch_state(batch_id)
+                return
+            except ValueError as e:
+                yield emit({"type": "error", "index": idx, "step": 1, "message": str(e)})
+                continue
+            except Exception as e:
+                logger.warning("Resume Step1 failed for %s: %s", url, e, exc_info=True)
+                yield emit({"type": "error", "index": idx, "step": 1, "message": "商品情報の取得に失敗しました。"})
+                continue
+
+            output_dir = Path(output_base) / asin
+            output_dir.mkdir(parents=True, exist_ok=True)
+            images_dir = output_dir / "images"
+            images_dir.mkdir(exist_ok=True)
+            videos_dir = output_dir / "videos"
+            videos_dir.mkdir(exist_ok=True)
+
+            yield emit({
+                "type": "step_done", "index": idx, "step": 1,
+                "data": {
+                    "asin": asin,
+                    "title_ja": product.get("title_ja", ""),
+                    "brand": product.get("brand", ""),
+                    "price": product.get("price", ""),
+                }
+            })
+
+            # Driveフォルダ作成
+            try:
+                drive_result = ensure_drive_folder(asin, config)
+                folder_id = drive_result["folder_id"]
+                folder_url = drive_result["folder_url"]
+                drive_obj = drive_result["drive"]
+                if not folder_url and folder_id:
+                    folder_url = f"https://drive.google.com/drive/folders/{folder_id}"
+            except Exception as e:
+                logger.warning("Resume Drive folder failed: %s", e)
+
+            # Step 2: 商品画像取得
+            yield emit({"type": "step", "index": idx, "step": 2, "total": total, "name": "商品画像取得", "est": "10秒"})
+            try:
+                image_paths = download_images(product["image_urls"], images_dir)
+            except Exception as e:
+                logger.warning("Resume Step2 failed for %s: %s", asin, e, exc_info=True)
+                yield emit({"type": "error", "index": idx, "step": 2, "message": "画像ダウンロードに失敗しました。"})
+                continue
+
+            image_urls = [f"/files/{asin}/images/{Path(p).name}" for p in image_paths]
+            image_count = len(image_paths)
+            image_shortage = image_count < 3
+
+            if drive_obj and folder_id:
+                try:
+                    image_items = upload_images_to_drive(drive_obj, image_paths, folder_id)
+                    if image_items:
+                        thumb_url = drive_thumb_url(image_items[0].get("id", ""))
+                    logger.info("Resume Step2: 元画像%d枚をDriveに保存完了", len(image_paths))
+                except Exception as e:
+                    logger.warning("Resume Step2 Drive保存失敗: %s", e)
+
+            yield emit({"type": "step_done", "index": idx, "step": 2, "data": {"image_count": image_count, "image_urls": image_urls, "image_shortage": image_shortage}})
+
+            if image_shortage:
+                yield emit({"type": "step_warn", "index": idx, "step": 2, "message": f"画像が{image_count}枚のみです（3枚未満）。レビュー画面から補完検索できます。"})
+
+            # Step 3: 英語翻訳 + 逆翻訳
+            yield emit({"type": "step", "index": idx, "step": 3, "total": total, "name": "英語翻訳 + 逆翻訳", "est": "5秒"})
+            try:
+                product = translate_product(product)
+            except Exception as e:
+                logger.warning("Resume Step3 failed for %s: %s", asin, e, exc_info=True)
+                yield emit({"type": "error", "index": idx, "step": 3, "message": "翻訳処理に失敗しました。"})
+                continue
+
+            yield emit({
+                "type": "step_done", "index": idx, "step": 3,
+                "data": {
+                    "title_en": product.get("title_en", ""),
+                    "title_reverse": product.get("title_reverse", ""),
+                    "features_en": product.get("features_en", []),
+                }
+            })
+
+            # Step 4: 画像テキスト英語化
+            translated_image_paths = []
+            if openai_key and not skip_image_translate:
+                total_images = len(image_paths)
+                est_per_image = 45
+                est = f"約{total_images * est_per_image}秒（{total_images}枚）"
+                yield emit({"type": "step", "index": idx, "step": 4, "total": total, "name": "画像テキスト英語化", "est": est})
+
+                en_dir = output_dir / "images_en"
+                en_dir.mkdir(exist_ok=True)
+                consecutive_failures = 0
+                max_consecutive_failures = 2
+                step4_start = time.time()
+
+                for img_i, img_path in enumerate(image_paths):
+                    out_path = en_dir / f"{img_path.stem}_en.png"
+                    try:
+                        success = translate_image_text(openai_key, str(img_path), str(out_path), product)
+                    except QuotaExhaustedError as e:
+                        yield emit({"type": "quota_exhausted", "index": idx, "step": 4, "service": e.service, "message": str(e)})
+                        remaining = len(urls) - idx - 1
+                        if remaining > 0:
+                            yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
+                        BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
+                        BATCH_STORE[batch_id]["stopped_at_index"] = idx
+                        BATCH_STORE[batch_id]["stopped_at_step"] = 4
+                        save_batch_state(batch_id)
+                        return
+                    except Exception as e:
+                        logger.warning("画像翻訳エラー (%s): %s", img_path, e)
+                        success = False
+
+                    if success:
+                        translated_image_paths.append(out_path)
+                        consecutive_failures = 0
+                    else:
+                        consecutive_failures += 1
+                        if consecutive_failures >= max_consecutive_failures:
+                            yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"画像翻訳が{max_consecutive_failures}回連続失敗。残り{total_images - img_i - 1}枚をスキップしました。"})
+                            break
+
+                    elapsed = time.time() - step4_start
+                    completed = img_i + 1
+                    avg = elapsed / completed if translated_image_paths else est_per_image
+                    est_remaining = avg * (total_images - completed)
+                    yield emit({"type": "step_progress", "index": idx, "step": 4, "completed": completed, "total_items": total_images, "elapsed_sec": round(elapsed, 1), "est_remaining_sec": round(max(0, est_remaining), 1)})
+
+                if drive_obj and folder_id and translated_image_paths:
+                    try:
+                        upload_translated_images_to_drive(drive_obj, translated_image_paths, folder_id)
+                        logger.info("Resume Step4: 翻訳画像%d枚をDriveに保存完了", len(translated_image_paths))
+                    except Exception as e:
+                        logger.warning("Resume Step4 Drive保存失敗: %s", e)
+
+                translated_image_urls = [f"/files/{asin}/images_en/{Path(p).name}" for p in translated_image_paths]
+                yield emit({"type": "step_done", "index": idx, "step": 4, "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}})
+            else:
+                yield emit({"type": "step_skip", "index": idx, "step": 4, "name": "画像テキスト英語化", "reason": "OpenAIキー未設定またはスキップ指定"})
+
+            # Step 5: 動画生成
+            effect = "zoom"
+            model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
+            version = "v1"
+            video_path = videos_dir / f"{version}.mp4"
+
+            yield emit({"type": "step", "index": idx, "step": 5, "total": total, "name": "動画生成", "est": "30〜120秒"})
+            try:
+                out = generate_video(image_paths, product, output_dir, config=config, effect=effect, output_path=video_path)
+                video_path = Path(out) if out else None
+                if video_path and video_path.exists():
+                    shutil.copy2(video_path, output_dir / "shopee_video.mp4")
+            except QuotaExhaustedError as e:
+                video_path = None
+                yield emit({"type": "quota_exhausted", "index": idx, "step": 5, "service": e.service, "message": str(e)})
+                remaining = len(urls) - idx - 1
+                if remaining > 0:
+                    yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
+                BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
+                BATCH_STORE[batch_id]["stopped_at_index"] = idx
+                BATCH_STORE[batch_id]["stopped_at_step"] = 5
+                save_batch_state(batch_id)
+                return
+            except Exception as e:
+                video_path = None
+                yield emit({"type": "step_warn", "index": idx, "step": 5, "message": f"動画生成失敗: {e}"})
+
+            video_record = None
+            if video_path and video_path.exists():
+                video_record = {
+                    "version": version, "effect": effect, "model": model,
+                    "memo": "", "prompt_extra": "", "created_at": now_iso(),
+                    "video_path": str(video_path),
+                    "video_url": f"/files/{asin}/videos/{video_path.name}",
+                }
+
+            if drive_obj and folder_id and video_path and video_path.exists():
+                try:
+                    video_item = upload_video_to_drive(drive_obj, video_path, folder_id)
+                    if video_item and video_record:
+                        video_record["drive_file_url"] = video_item.get("webViewLink", "")
+                    logger.info("Resume Step5: 動画をDriveに保存完了")
+                except Exception as e:
+                    logger.warning("Resume Step5 Drive保存失敗: %s", e)
+
+            # Step 6: Drive確認
+            yield emit({"type": "step", "index": idx, "step": 6, "total": total, "name": "Driveアップロード確認", "est": "2秒"})
+            yield emit({"type": "step_done", "index": idx, "step": 6, "data": {"drive_folder_url": folder_url, "drive_thumb_url": thumb_url}})
+
+            if video_record:
+                try:
+                    append_video_generation_log(
+                        asin=asin, product_url=url, version=video_record["version"],
+                        effect=video_record["effect"], model=video_record["model"],
+                        memo="", drive_folder_url=folder_url,
+                        drive_file_url=video_record.get("drive_file_url", ""),
+                        thumb_url=thumb_url, is_selected=False, config=config,
+                    )
+                except Exception:
+                    pass
+
+            # Step 7: スプレッドシート書き込み
+            yield emit({"type": "step", "index": idx, "step": 7, "total": total, "name": "スプレッドシート書き込み", "est": "2秒"})
+            if auto_finalize:
+                try:
+                    write_to_spreadsheet(url, product, len(image_paths), folder_url, config)
+                    yield emit({"type": "step_done", "index": idx, "step": 7, "data": {"finalized": True}})
+                except Exception as e:
+                    yield emit({"type": "step_warn", "index": idx, "step": 7, "message": f"スプレッドシートエラー: {e}"})
+                    yield emit({"type": "step_done", "index": idx, "step": 7, "data": {"finalized": False}})
+            else:
+                yield emit({"type": "step_skip", "index": idx, "step": 7, "name": "スプレッドシート書き込み", "reason": "レビュー後に確定"})
+
+            product_state = {
+                "url": url, "asin": asin,
+                "title_ja": product.get("title_ja", ""),
+                "brand": product.get("brand", ""),
+                "product": product,
+                "image_paths": [str(p) for p in image_paths],
+                "image_urls": image_urls,
+                "translated_image_paths": [str(p) for p in translated_image_paths],
+                "image_count": image_count,
+                "image_shortage": image_shortage,
+                "drive_folder_url": folder_url,
+                "drive_folder_id": folder_id,
+                "drive_thumb_url": thumb_url,
+                "videos": [video_record] if video_record else [],
+                "selected_version": version if video_record else "",
+                "selected_image_url": image_urls[0] if image_urls else "",
+                "finalized": bool(auto_finalize),
+                "finalized_at": now_iso() if auto_finalize else "",
+                "created_at": now_iso(),
+            }
+            results.append(product_state)
+            save_batch_state(batch_id)
+            yield emit({"type": "product_done", "index": idx, "asin": asin, "data": product_state})
+
+        BATCH_STORE[batch_id]["results"] = results
+        BATCH_STORE[batch_id]["updated_at"] = now_iso()
+        BATCH_STORE[batch_id].pop("stopped_reason", None)
+        BATCH_STORE[batch_id].pop("stopped_at_index", None)
+        BATCH_STORE[batch_id].pop("stopped_at_step", None)
+        save_batch_state(batch_id)
+        yield emit({"type": "all_done", "batch_id": batch_id, "results": results})
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )
 
 
