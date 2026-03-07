@@ -940,6 +940,36 @@ def _find_existing_folder(drive, parent_id, folder_name):
     return files[0] if files else None
 
 
+def list_drive_folder_images(folder_id, config=None):
+    """Driveフォルダ内の画像ファイルID一覧を取得。サムネイル表示用。"""
+    if not folder_id:
+        return []
+    if config is None:
+        config = get_config()
+    drive = _get_drive_service(config)
+    if not drive:
+        return []
+    q = (
+        f"'{_escape_drive_query(folder_id)}' in parents and trashed=false and "
+        f"(mimeType='image/jpeg' or mimeType='image/png')"
+    )
+    def _do_list():
+        return drive.files().list(
+            q=q,
+            pageSize=50,
+            orderBy="name",
+            fields="files(id, name)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
+    try:
+        res = _drive_api_retry(_do_list)
+        return [f.get("id", "") for f in res.get("files", []) if f.get("id")]
+    except Exception as e:
+        logger.warning("Driveフォルダ画像一覧取得失敗: %s", e)
+        return []
+
+
 def ensure_drive_folder(asin, config=None):
     """ASINフォルダをDriveに作成（既存なら再利用）。folder_id, folder_url, driveオブジェクトを返す。"""
     if config is None:
