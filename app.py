@@ -1866,16 +1866,25 @@ async def history_asin_page(asin: str):
             ver = vp.stem  # e.g. "v1", "v2"
             local_videos[ver] = f"/files/{html.escape(asin)}/videos/{html.escape(vp.name)}"
 
-    # 最新の動画URLを決定（ローカル優先 → Drive）
+    # DriveファイルURLからプロキシ再生用URLを生成
+    def _drive_proxy_url(drive_url: str) -> str:
+        """https://drive.google.com/file/d/{ID}/view → /drive-video/{ID}"""
+        m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", drive_url)
+        if m:
+            return f"/drive-video/{m.group(1)}"
+        return ""
+
+    # 最新の動画URLを決定（ローカル優先 → Driveプロキシ）
     latest_video_url = ""
-    latest_video_drive = ""
     for r in rows:
         ver = r.get("version", "")
         if ver in local_videos:
             latest_video_url = local_videos[ver]
             break
         if r.get("drive_file_url", ""):
-            latest_video_drive = r["drive_file_url"]
+            proxy = _drive_proxy_url(r["drive_file_url"])
+            if proxy:
+                latest_video_url = proxy
             break
 
     entries_html = []
@@ -1883,10 +1892,14 @@ async def history_asin_page(asin: str):
         vid = r.get("drive_file_url", "")
         ver = r.get("version", "")
         selected_mark = "<span style='color:#16a34a;font-weight:600'>YES</span>" if r.get('selected','').upper()=='YES' else ''
-        # 再生ボタン: ローカルファイルがあればインライン再生、なければDriveリンク
+        # 再生ボタン: ローカル → Driveプロキシ → Driveリンク
         play_html = ""
         if ver in local_videos:
             play_html = f"<button onclick=\"playVideo('{html.escape(local_videos[ver])}')\" style=\"background:#ee4d2d;color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer\">&#9654; 再生</button>"
+        elif vid:
+            proxy = _drive_proxy_url(vid)
+            if proxy:
+                play_html = f"<button onclick=\"playVideo('{html.escape(proxy)}')\" style=\"background:#ee4d2d;color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer\">&#9654; 再生</button>"
         if vid:
             play_html += f" <a href=\"{html.escape(vid)}\" target=\"_blank\" style=\"font-size:11px\">Drive &rarr;</a>"
         entries_html.append(
@@ -1944,7 +1957,7 @@ a{{color:#ee4d2d;text-decoration:none;transition:color .2s}} a:hover{{color:#d43
   <div class="card">
     <h2>動画プレビュー</h2>
     <div id="video-player-area" style="margin-bottom:16px">
-      {f'<video id="main-video" src="{latest_video_url}" controls style="max-width:480px;width:100%;border-radius:12px;background:#000"></video>' if latest_video_url else (f'<div style="font-size:13px;color:#9298a8">ローカル動画なし。<a href="{html.escape(latest_video_drive)}" target="_blank">Driveで再生 &rarr;</a></div>' if latest_video_drive else '<div style="font-size:13px;color:#9298a8">動画なし</div>')}
+      {f'<video id="main-video" src="{html.escape(latest_video_url)}" controls style="max-width:480px;width:100%;border-radius:12px;background:#000"></video>' if latest_video_url else '<div style="font-size:13px;color:#9298a8">動画なし</div>'}
     </div>
     {'<div style="margin-top:16px;padding:16px;background:#f6f7fb;border-radius:12px"><div style="font-weight:600;font-size:13px;margin-bottom:10px">動画を再生成</div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><select id="regen-effect" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;background:#fff"><option value="zoom">zoom</option><option value="unbox">unbox</option><option value="steam">steam</option><option value="condensation">condensation</option><option value="pickup">pickup</option></select><input id="regen-memo" type="text" placeholder="メモ" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;min-width:120px"/><input id="regen-prompt" type="text" placeholder="追加指示（例: 商品を正面から）" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;flex:1;min-width:180px"/><button id="regen-btn" onclick="regenerateVideo()" style="padding:6px 16px;background:#ee4d2d;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap">再生成</button></div><div id="regen-status" style="display:none;margin-top:8px;font-size:12px;color:#5f6577"></div></div>' if found_batch_id else '<div style="margin-top:12px;font-size:12px;color:#9298a8">※ バッチデータが見つからないため再生成は利用できません。メインページから再処理してください。</div>'}
   </div>
