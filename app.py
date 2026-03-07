@@ -20,6 +20,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from shopee_core import (
     EFFECT_PROMPTS,
+    QuotaExhaustedError,
     append_video_generation_log,
     fetch_product_sheet_history,
     fetch_video_generation_history,
@@ -30,6 +31,10 @@ from shopee_core import (
     translate_product,
     translate_images,
     generate_video,
+    ensure_drive_folder,
+    upload_images_to_drive,
+    upload_translated_images_to_drive,
+    upload_video_to_drive,
     upload_to_drive,
     upload_file_to_drive_folder,
     write_to_spreadsheet,
@@ -985,6 +990,25 @@ function handleEvent(evt){
     }
     renderActiveProductPanel();
     logLine(`  [${evt.index+1}] 警告: ${evt.message}`);
+  }else if(evt.type==='quota_exhausted'){
+    if(progressProducts[evt.index]){
+      if(evt.step>=1 && evt.step<=7){
+        progressProducts[evt.index].steps[evt.step-1]='error';
+        progressProducts[evt.index].stepMessages[evt.step]=evt.message||'';
+      }
+      progressProducts[evt.index].status='error';
+    }
+    renderProgressTabs();
+    renderActiveProductPanel();
+    logLine(`  [${(evt.index??0)+1}] API残高不足: ${evt.message}`);
+    alert(evt.message);
+  }else if(evt.type==='batch_stopped'){
+    logLine(`バッチ停止: ${evt.message}`);
+    for(let i=(evt.stopped_at_index||0)+1;i<progressProducts.length;i++){
+      progressProducts[i].status='skipped';
+    }
+    renderProgressTabs();
+    renderActiveProductPanel();
   }else if(evt.type==='error'){
     if(progressProducts[evt.index]){
       if(evt.step>=1 && evt.step<=7){
@@ -1152,7 +1176,27 @@ function renderReview(){
         </div>
       </div>
     </div>
+    <div style="margin-top:16px;padding:16px;background:var(--c-bg);border-radius:var(--radius);border:1px solid var(--c-border)">
+      <div style="font-weight:700;font-size:14px;margin-bottom:12px">ステップから再開</div>
+      <div id="rc-controls" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <select id="rc-step" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;background:#fff;min-width:220px">
+          <option value="" disabled selected>読み込み中...</option>
+        </select>
+        <select id="rc-effect" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;background:#fff">
+          <option value="zoom">zoom</option><option value="unbox">unbox</option><option value="steam">steam</option><option value="condensation">condensation</option><option value="pickup">pickup</option>
+        </select>
+        <button id="rc-btn" onclick="startRestartFromMain()" disabled
+          style="padding:6px 16px;background:var(--c-brand);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">
+          再開
+        </button>
+      </div>
+      <div id="rc-progress" style="display:none">
+        <div id="rc-steps-list" style="font-size:13px;line-height:2"></div>
+      </div>
+      <div id="rc-error" style="display:none;color:#dc2626;font-size:13px;margin-top:8px"></div>
+    </div>
   `;
+  loadRestartableStepsMain(p.asin);
 }
 
 function selectReviewImage(asin, imageIndex){
@@ -1266,6 +1310,106 @@ async function finalizeBatch(){
   document.getElementById('finalizeMsg').textContent=`${data.finalized_count}件を確定しました`;
   reviewProducts=data.products || reviewProducts;
   renderReview();
+}
+
+async function loadRestartableStepsMain(asin){
+  const sel=document.getElementById('rc-step');
+  if(!sel||!currentBatchId||!asin) return;
+  try{
+    const res=await fetch('/api/restartable-steps/'+encodeURIComponent(currentBatchId)+'/'+encodeURIComponent(asin));
+    const data=await res.json();
+    sel.innerHTML='';
+    let hasAvail=false;
+    data.steps.forEach(s=>{
+      const opt=document.createElement('option');
+      opt.value=s.step;
+      opt.textContent='Step '+s.step+': '+s.name;
+      opt.disabled=!s.available;
+      if(s.available&&!hasAvail){opt.selected=true;hasAvail=true;}
+      sel.appendChild(opt);
+    });
+    if(!hasAvail){
+      const opt=document.createElement('option');
+      opt.value='';opt.textContent='再開可能なステップがありません（Step 1からやり直してください）';
+      opt.disabled=true;opt.selected=true;
+      sel.insertBefore(opt,sel.firstChild);
+    }
+    document.getElementById('rc-btn').disabled=!hasAvail;
+  }catch(e){
+    sel.innerHTML='<option disabled selected>読み込みエラー</option>';
+  }
+}
+
+function startRestartFromMain(){
+  const p=reviewProducts[activeReviewProductIndex];
+  if(!p||!currentBatchId) return;
+  const step=document.getElementById('rc-step').value;
+  const effect=document.getElementById('rc-effect').value;
+  if(!step) return;
+
+  document.getElementById('rc-btn').disabled=true;
+  document.getElementById('rc-btn').textContent='実行中...';
+  document.getElementById('rc-progress').style.display='block';
+  document.getElementById('rc-error').style.display='none';
+  document.getElementById('rc-steps-list').innerHTML='';
+
+  fetch('/restart-from-step',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({batch_id:currentBatchId,asin:p.asin,from_step:parseInt(step),effect:effect})
+  }).then(response=>{
+    const reader=response.body.getReader();
+    const decoder=new TextDecoder();
+    let buf='';
+    function read(){
+      reader.read().then(({done,value})=>{
+        if(done) return;
+        buf+=decoder.decode(value,{stream:true});
+        const lines=buf.split('\\n');
+        buf=lines.pop();
+        lines.forEach(line=>{
+          if(!line.startsWith('data: ')) return;
+          try{
+            const ev=JSON.parse(line.slice(6));
+            handleRestartEventMain(ev);
+          }catch(e){}
+        });
+        read();
+      });
+    }
+    read();
+  }).catch(err=>{
+    document.getElementById('rc-error').style.display='block';
+    document.getElementById('rc-error').textContent='エラー: '+err.message;
+    document.getElementById('rc-btn').disabled=false;
+    document.getElementById('rc-btn').textContent='再開';
+  });
+}
+
+function handleRestartEventMain(ev){
+  const list=document.getElementById('rc-steps-list');
+  if(ev.type==='step_skip'){
+    list.innerHTML+='<div style="color:#9298a8">Step '+ev.step+': '+(ev.name||STEP_NAMES[ev.step-1]||'')+' — <span style="font-style:italic">スキップ</span></div>';
+  }else if(ev.type==='step'){
+    list.innerHTML+='<div id="rc-row-'+ev.step+'">Step '+ev.step+': '+(ev.name||'')+' — <span style="color:#f59e0b;font-weight:600">実行中...</span></div>';
+  }else if(ev.type==='step_done'){
+    const row=document.getElementById('rc-row-'+ev.step);
+    if(row) row.innerHTML=row.innerHTML.replace(/実行中\\.\\.\\./, '<span style="color:#16a34a;font-weight:600">完了</span>');
+  }else if(ev.type==='step_warn'){
+    list.innerHTML+='<div style="color:#f59e0b;font-size:12px;padding-left:16px">警告: '+(ev.message||'')+'</div>';
+  }else if(ev.type==='quota_exhausted'){
+    list.innerHTML+='<div style="color:#dc2626;font-weight:700;padding:8px;background:#fef2f2;border-radius:6px;margin:4px 0">API残高不足: '+(ev.message||'')+'</div>';
+    document.getElementById('rc-btn').disabled=false;
+    document.getElementById('rc-btn').textContent='再開';
+    alert(ev.message);
+  }else if(ev.type==='error'){
+    list.innerHTML+='<div style="color:#dc2626;font-weight:600">Step '+(ev.step||'?')+': エラー — '+(ev.message||'')+'</div>';
+    document.getElementById('rc-btn').disabled=false;
+    document.getElementById('rc-btn').textContent='再開';
+  }else if(ev.type==='all_done'){
+    list.innerHTML+='<div style="color:#16a34a;font-weight:700;margin-top:8px">すべて完了しました。3秒後にリロードします...</div>';
+    setTimeout(()=>location.reload(),3000);
+  }
 }
 </script>
 </body>
@@ -1644,6 +1788,11 @@ def _restart_card_js(batch_id: str, asin: str) -> str:
         "    if (row) row.innerHTML = row.innerHTML.replace(/実行中\\.\\.\\./, '<span style=\"color:#16a34a;font-weight:600\">完了</span>');\n"
         "  } else if (ev.type === 'step_warn') {\n"
         "    list.innerHTML += '<div style=\"color:#f59e0b;font-size:12px;padding-left:16px\">警告: ' + (ev.message || '') + '</div>';\n"
+        "  } else if (ev.type === 'quota_exhausted') {\n"
+        "    list.innerHTML += '<div style=\"color:#dc2626;font-weight:700;padding:8px;background:#fef2f2;border-radius:6px;margin:4px 0\">API残高不足: ' + (ev.message || '') + '</div>';\n"
+        "    document.getElementById('restart-btn').disabled = false;\n"
+        "    document.getElementById('restart-btn').textContent = '再開';\n"
+        "    alert(ev.message);\n"
         "  } else if (ev.type === 'error') {\n"
         "    list.innerHTML += '<div style=\"color:#dc2626;font-weight:600\">Step ' + (ev.step || '?') + ': エラー — ' + (ev.message || '') + '</div>';\n"
         "    document.getElementById('restart-btn').disabled = false;\n"
@@ -1934,6 +2083,9 @@ async def restart_from_step(request: Request):
                 try:
                     translated_image_paths = translate_images(openai_key, image_paths, output_dir, product)
                     translated_image_paths = [str(p) for p in translated_image_paths]
+                except QuotaExhaustedError as e:
+                    yield emit({"type": "quota_exhausted", "index": 0, "step": 4, "service": e.service, "message": str(e)})
+                    return
                 except Exception as e:
                     yield emit({"type": "step_warn", "index": 0, "step": 4, "message": f"一部失敗: {e}"})
                 translated_image_urls = [f"/files/{asin}/images_en/{Path(p).name}" for p in translated_image_paths]
@@ -1956,6 +2108,10 @@ async def restart_from_step(request: Request):
             try:
                 out = generate_video(image_paths, product, output_dir, config=config, effect=effect, output_path=video_path)
                 video_path = Path(out) if out else None
+            except QuotaExhaustedError as e:
+                video_path = None
+                yield emit({"type": "quota_exhausted", "index": 0, "step": 5, "service": e.service, "message": str(e)})
+                return
             except Exception as e:
                 video_path = None
                 yield emit({"type": "step_warn", "index": 0, "step": 5, "message": f"動画生成失敗: {e}"})
@@ -2159,11 +2315,26 @@ async def process_stream(request: Request):
             output_base = config["output_base"]
             total = 7
 
-            # Step 1
+            # Drive関連の変数を初期化
+            folder_url = ""
+            folder_id = ""
+            drive_obj = None
+            thumb_url = ""
+
+            # Step 1: Amazon商品情報を取得
             yield emit({"type": "step", "index": idx, "step": 1, "total": total, "name": "Amazon商品情報を取得", "est": "5秒"})
             try:
                 asin = extract_asin(url)
                 product = fetch_amazon_product(asin, rainforest_key)
+            except QuotaExhaustedError as e:
+                yield emit({"type": "quota_exhausted", "index": idx, "step": 1, "service": e.service, "message": str(e)})
+                remaining = len(urls) - idx - 1
+                if remaining > 0:
+                    yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
+                BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
+                BATCH_STORE[batch_id]["stopped_at_index"] = idx
+                save_batch_state(batch_id)
+                return
             except ValueError as e:
                 yield emit({"type": "error", "index": idx, "step": 1, "message": str(e)})
                 continue
@@ -2179,6 +2350,18 @@ async def process_stream(request: Request):
             videos_dir = output_dir / "videos"
             videos_dir.mkdir(exist_ok=True)
 
+            # Step 1完了後: Driveフォルダを事前作成
+            try:
+                drive_result = ensure_drive_folder(asin, config)
+                folder_id = drive_result["folder_id"]
+                folder_url = drive_result["folder_url"]
+                drive_obj = drive_result["drive"]
+                if not folder_url and folder_id:
+                    folder_url = f"https://drive.google.com/drive/folders/{folder_id}"
+            except Exception as e:
+                logger.warning("Driveフォルダ作成失敗 for %s: %s", asin, e, exc_info=True)
+                yield emit({"type": "step_warn", "index": idx, "step": 1, "message": f"Driveフォルダ作成失敗（後続ステップで再試行します）: {e}"})
+
             yield emit({
                 "type": "step_done", "index": idx, "step": 1,
                 "data": {
@@ -2190,7 +2373,7 @@ async def process_stream(request: Request):
                 }
             })
 
-            # Step 2
+            # Step 2: 画像ダウンロード + 即座にDrive保存
             yield emit({"type": "step", "index": idx, "step": 2, "total": total, "name": "画像ダウンロード", "est": "3秒"})
             try:
                 image_paths = download_images(product["image_urls"], images_dir)
@@ -2202,6 +2385,18 @@ async def process_stream(request: Request):
             image_urls = [f"/files/{asin}/images/{Path(p).name}" for p in image_paths]
             image_count = len(image_paths)
             image_shortage = image_count < 3
+
+            # 元画像を即座にDriveへ保存
+            if drive_obj and folder_id:
+                try:
+                    image_items = upload_images_to_drive(drive_obj, image_paths, folder_id)
+                    if image_items:
+                        thumb_url = drive_thumb_url(image_items[0].get("id", ""))
+                    logger.info("Step2: 元画像%d枚をDriveに保存完了", len(image_paths))
+                except Exception as e:
+                    logger.warning("Step2 Drive保存失敗: %s", e)
+                    yield emit({"type": "step_warn", "index": idx, "step": 2, "message": f"Drive保存失敗（画像はローカルに保持）: {e}"})
+
             step2_data = {
                 "image_count": image_count,
                 "image_urls": image_urls,
@@ -2215,7 +2410,7 @@ async def process_stream(request: Request):
                     "message": f"画像が{image_count}枚のみです（3枚未満）。レビュー画面から補完検索できます。"
                 })
 
-            # Step 3
+            # Step 3: 英語翻訳 + 逆翻訳
             yield emit({"type": "step", "index": idx, "step": 3, "total": total, "name": "英語翻訳 + 逆翻訳", "est": "5秒"})
             try:
                 product = translate_product(product)
@@ -2233,15 +2428,33 @@ async def process_stream(request: Request):
                 }
             })
 
-            # Step 4
+            # Step 4: 画像テキスト英語化 + 即座にDrive保存
             translated_image_paths = []
             if openai_key and not skip_image_translate:
                 est = f"約{len(image_paths) * 45}秒（{len(image_paths)}枚）"
                 yield emit({"type": "step", "index": idx, "step": 4, "total": total, "name": "画像テキスト英語化", "est": est})
                 try:
                     translated_image_paths = translate_images(openai_key, image_paths, output_dir, product)
+                except QuotaExhaustedError as e:
+                    yield emit({"type": "quota_exhausted", "index": idx, "step": 4, "service": e.service, "message": str(e)})
+                    remaining = len(urls) - idx - 1
+                    if remaining > 0:
+                        yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
+                    BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
+                    BATCH_STORE[batch_id]["stopped_at_index"] = idx
+                    save_batch_state(batch_id)
+                    return
                 except Exception as e:
                     yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"一部失敗: {e}"})
+
+                # 翻訳画像を即座にDriveへ保存
+                if drive_obj and folder_id and translated_image_paths:
+                    try:
+                        upload_translated_images_to_drive(drive_obj, translated_image_paths, folder_id)
+                        logger.info("Step4: 翻訳画像%d枚をDriveに保存完了", len(translated_image_paths))
+                    except Exception as e:
+                        logger.warning("Step4 Drive保存失敗: %s", e)
+                        yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"翻訳画像のDrive保存失敗: {e}"})
 
                 translated_image_urls = [f"/files/{asin}/images_en/{Path(p).name}" for p in translated_image_paths]
                 yield emit({
@@ -2251,7 +2464,7 @@ async def process_stream(request: Request):
             else:
                 yield emit({"type": "step_skip", "index": idx, "step": 4, "name": "画像テキスト英語化", "reason": "OpenAIキー未設定またはスキップ指定"})
 
-            # Step 5
+            # Step 5: 動画生成 + 即座にDrive保存
             effect = "zoom"
             model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
             version = "v1"
@@ -2263,6 +2476,16 @@ async def process_stream(request: Request):
                 video_path = Path(out) if out else None
                 if video_path and video_path.exists():
                     shutil.copy2(video_path, output_dir / "shopee_video.mp4")
+            except QuotaExhaustedError as e:
+                video_path = None
+                yield emit({"type": "quota_exhausted", "index": idx, "step": 5, "service": e.service, "message": str(e)})
+                remaining = len(urls) - idx - 1
+                if remaining > 0:
+                    yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
+                BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
+                BATCH_STORE[batch_id]["stopped_at_index"] = idx
+                save_batch_state(batch_id)
+                return
             except Exception as e:
                 video_path = None
                 yield emit({"type": "step_warn", "index": idx, "step": 5, "message": f"動画生成失敗: {e}"})
@@ -2283,45 +2506,51 @@ async def process_stream(request: Request):
                     "source_image_url": image_urls[0] if image_urls else "",
                 }
 
+                # 動画を即座にDriveへ保存
+                if drive_obj and folder_id:
+                    try:
+                        video_item = upload_video_to_drive(drive_obj, video_path, folder_id)
+                        video_record["drive_file_url"] = video_item.get("webViewLink", "")
+                        logger.info("Step5: 動画をDriveに保存完了")
+                    except Exception as e:
+                        logger.warning("Step5 動画Drive保存失敗: %s", e)
+                        yield emit({"type": "step_warn", "index": idx, "step": 5, "message": f"動画のDrive保存失敗: {e}"})
+
             yield emit({
                 "type": "step_done", "index": idx, "step": 5,
                 "data": {"video_url": video_record["video_url"] if video_record else None}
             })
 
-            # Step 6
-            yield emit({"type": "step", "index": idx, "step": 6, "total": total, "name": "Google Driveアップロード", "est": "10秒"})
-            folder_url = ""
-            folder_id = ""
-            thumb_url = ""
-            try:
-                drive_meta = upload_to_drive(
-                    asin, image_paths, translated_image_paths, video_path, config, return_meta=True
-                )
-                folder_url = drive_meta.get("folder_url", "")
-                folder_id = drive_meta.get("folder_id", "") or parse_drive_folder_id(folder_url)
-                if not folder_url and folder_id:
-                    folder_url = f"https://drive.google.com/drive/folders/{folder_id}"
-                image_items = drive_meta.get("image_items", [])
-                if image_items:
-                    thumb_url = drive_thumb_url(image_items[0].get("id", ""))
-                if video_record:
-                    video_item = drive_meta.get("video_item", {}) or {}
-                    video_record["drive_file_url"] = video_item.get("webViewLink", "")
-                    if not video_record["drive_file_url"]:
-                        raise RuntimeError("動画ファイルのDrive保存に失敗しました")
-                if not folder_url:
-                    raise RuntimeError("DriveフォルダURLが取得できません")
-            except Exception as e:
-                logger.warning("Step6 Drive upload failed for %s: %s", asin, e, exc_info=True)
-                err_str = str(e)
-                if "認証" in err_str or "credential" in err_str.lower():
-                    msg = "Google Drive認証に失敗しました。管理者に連絡してください。"
-                elif "権限" in err_str or "permission" in err_str.lower() or "403" in err_str:
-                    msg = "Google Driveフォルダへの書き込み権限がありません。フォルダの共有設定を確認してください。"
-                else:
-                    msg = "Google Driveへのアップロードに失敗しました。しばらくしてから再度お試しください。"
-                yield emit({"type": "error", "index": idx, "step": 6, "message": msg})
-                continue
+            # Step 6: Drive保存確認（逐次保存済みなので確認のみ）
+            yield emit({"type": "step", "index": idx, "step": 6, "total": total, "name": "Google Drive保存確認", "est": "2秒"})
+            if not folder_url:
+                # Driveフォルダ作成に失敗していた場合はここで再試行
+                try:
+                    drive_result = ensure_drive_folder(asin, config)
+                    folder_id = drive_result["folder_id"]
+                    folder_url = drive_result["folder_url"]
+                    drive_obj = drive_result["drive"]
+                    if not folder_url and folder_id:
+                        folder_url = f"https://drive.google.com/drive/folders/{folder_id}"
+                    # まとめてアップロード（フォールバック）
+                    upload_images_to_drive(drive_obj, image_paths, folder_id)
+                    if translated_image_paths:
+                        upload_translated_images_to_drive(drive_obj, translated_image_paths, folder_id)
+                    if video_path and Path(video_path).exists():
+                        video_item = upload_video_to_drive(drive_obj, video_path, folder_id)
+                        if video_record:
+                            video_record["drive_file_url"] = video_item.get("webViewLink", "")
+                except Exception as e:
+                    logger.warning("Step6 Drive fallback failed for %s: %s", asin, e, exc_info=True)
+                    err_str = str(e)
+                    if "認証" in err_str or "credential" in err_str.lower():
+                        msg = "Google Drive認証に失敗しました。管理者に連絡してください。"
+                    elif "権限" in err_str or "permission" in err_str.lower() or "403" in err_str:
+                        msg = "Google Driveフォルダへの書き込み権限がありません。フォルダの共有設定を確認してください。"
+                    else:
+                        msg = "Google Driveへのアップロードに失敗しました。しばらくしてから再度お試しください。"
+                    yield emit({"type": "error", "index": idx, "step": 6, "message": msg})
+                    continue
 
             yield emit({"type": "step_done", "index": idx, "step": 6, "data": {"drive_folder_url": folder_url}})
 
@@ -2343,7 +2572,7 @@ async def process_stream(request: Request):
                 except Exception:
                     pass
 
-            # Step 7
+            # Step 7: スプレッドシート書き込み
             yield emit({"type": "step", "index": idx, "step": 7, "total": total, "name": "スプレッドシート書き込み", "est": "2秒"})
             if auto_finalize:
                 try:
