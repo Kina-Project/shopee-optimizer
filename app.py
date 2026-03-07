@@ -12,7 +12,7 @@ import uuid
 import html
 from urllib.parse import quote
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -161,8 +161,11 @@ def sse_event(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+JST = timezone(timedelta(hours=9))
+
+
 def now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now(JST).isoformat(timespec="seconds")
 
 
 def parse_drive_folder_id(folder_url: str) -> str:

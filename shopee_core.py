@@ -12,7 +12,9 @@ logger = logging.getLogger(__name__)
 import subprocess
 import shutil
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+JST = timezone(timedelta(hours=9))
 
 import time
 import requests
@@ -1210,7 +1212,7 @@ def write_to_spreadsheet(url, product, image_count, image_folder_url="", config=
     existing = ws.col_values(3)
     asin = product["asin"]
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
 
     row_idx = None
     for i, val in enumerate(existing):
@@ -1300,7 +1302,7 @@ def append_video_generation_log(
         ])
 
     ws.append_row([
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S"),
         asin,
         product_url,
         version,
