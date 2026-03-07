@@ -1968,7 +1968,14 @@ function playVideo(url) {{
     vid.src = url;
     vid.play();
   }} else {{
-    area.innerHTML = '<video id="main-video" src="' + url + '" controls autoplay style="max-width:480px;width:100%;border-radius:12px;background:#000"></video>';
+    const v = document.createElement('video');
+    v.id = 'main-video';
+    v.src = url;
+    v.controls = true;
+    v.autoplay = true;
+    v.style.cssText = 'max-width:480px;width:100%;border-radius:12px;background:#000';
+    area.innerHTML = '';
+    area.appendChild(v);
   }}
   area.scrollIntoView({{ behavior: 'smooth', block: 'nearest' }});
 }}
