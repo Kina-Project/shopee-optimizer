@@ -1187,6 +1187,23 @@ function getReviewImageUrls(p){
     .filter(Boolean);
 }
 
+function driveImgFallback(img,asin,idx){
+  const p=reviewProducts.find(r=>r.asin===asin);
+  if(p && Array.isArray(p.drive_image_ids) && p.drive_image_ids[idx]){
+    img.onerror=null;
+    img.src='https://lh3.googleusercontent.com/d/'+p.drive_image_ids[idx]+'=w400';
+  }
+}
+function driveVideoFallback(video,driveUrl){
+  if(!driveUrl)return;
+  const link=document.createElement('a');
+  link.href=driveUrl;
+  link.target='_blank';
+  link.style.cssText='display:flex;width:300px;height:200px;align-items:center;justify-content:center;background:var(--c-bg);border-radius:var(--radius);color:var(--c-brand);font-size:13px;text-decoration:none;border:1px dashed var(--c-border-light)';
+  link.textContent='Driveで動画を再生 →';
+  video.parentNode.replaceChild(link,video);
+}
+
 function setActiveReviewProduct(index){
   activeReviewProductIndex=index;
   renderReview();
@@ -1242,7 +1259,7 @@ function renderReview(){
         <div class="review-image-grid">
           ${imageUrls.map((u,i)=>`
             <div class="review-image-item ${u===selectedImage?'active':''}">
-              <img src="${esc(u)}" alt="image-${i+1}" loading="lazy" />
+              <img src="${esc(u)}" alt="image-${i+1}" loading="lazy" onerror="driveImgFallback(this,'${p.asin}',${i})" />
               <button class="btn btn-ghost btn-sm" style="margin-top:6px;width:100%" onclick="selectReviewImage('${p.asin}', ${i})">
                 ${u===selectedImage?'選択中':'この画像で再度生成'}
               </button>
@@ -1268,7 +1285,7 @@ function renderReview(){
       </div>
       ${shortageHtml}
       <div class="review-main">
-        ${v?.video_url?`<video controls src="${esc(v.video_url)}"></video>`:'<div style="width:300px;height:200px;display:flex;align-items:center;justify-content:center;background:var(--c-bg);border-radius:var(--radius);color:var(--c-text-muted);font-size:13px">動画なし</div>'}
+        ${v?.video_url?`<video controls src="${esc(v.video_url)}" onerror="driveVideoFallback(this,'${esc(v.drive_file_url||'')}')"></video>`:'<div style="width:300px;height:200px;display:flex;align-items:center;justify-content:center;background:var(--c-bg);border-radius:var(--radius);color:var(--c-text-muted);font-size:13px">動画なし</div>'}
         <div class="review-controls">
           <div class="control-row">
             <span class="control-label">現在</span>
@@ -2506,6 +2523,7 @@ async def process_stream(request: Request):
             folder_id = ""
             drive_obj = None
             thumb_url = ""
+            drive_image_ids = []
 
             # Step 1: Amazon商品情報を取得
             yield emit({"type": "step", "index": idx, "step": 1, "total": total, "name": "Amazon商品情報を取得", "est": "5秒"})
@@ -2579,6 +2597,7 @@ async def process_stream(request: Request):
                     image_items = upload_images_to_drive(drive_obj, image_paths, folder_id)
                     if image_items:
                         thumb_url = drive_thumb_url(image_items[0].get("id", ""))
+                        drive_image_ids = [item.get("id", "") for item in image_items if item.get("id")]
                     logger.info("Step2: 元画像%d枚をDriveに保存完了", len(image_paths))
                 except Exception as e:
                     logger.warning("Step2 Drive保存失敗: %s", e)
@@ -2824,6 +2843,7 @@ async def process_stream(request: Request):
                 "drive_folder_url": folder_url,
                 "drive_folder_id": folder_id,
                 "drive_thumb_url": thumb_url,
+                "drive_image_ids": drive_image_ids,
                 "videos": [video_record] if video_record else [],
                 "selected_version": version if video_record else "",
                 "selected_image_url": image_urls[0] if image_urls else "",
@@ -2903,6 +2923,7 @@ async def resume_batch(batch_id: str):
             folder_id = ""
             drive_obj = None
             thumb_url = ""
+            drive_image_ids = []
 
             # Step 1: Amazon商品情報を取得
             yield emit({"type": "step", "index": idx, "step": 1, "total": total, "name": "Amazon商品情報を取得", "est": "5秒"})
@@ -2973,6 +2994,7 @@ async def resume_batch(batch_id: str):
                     image_items = upload_images_to_drive(drive_obj, image_paths, folder_id)
                     if image_items:
                         thumb_url = drive_thumb_url(image_items[0].get("id", ""))
+                        drive_image_ids = [item.get("id", "") for item in image_items if item.get("id")]
                     logger.info("Resume Step2: 元画像%d枚をDriveに保存完了", len(image_paths))
                 except Exception as e:
                     logger.warning("Resume Step2 Drive保存失敗: %s", e)
@@ -3145,6 +3167,7 @@ async def resume_batch(batch_id: str):
                 "drive_folder_url": folder_url,
                 "drive_folder_id": folder_id,
                 "drive_thumb_url": thumb_url,
+                "drive_image_ids": drive_image_ids,
                 "videos": [video_record] if video_record else [],
                 "selected_version": version if video_record else "",
                 "selected_image_url": image_urls[0] if image_urls else "",
