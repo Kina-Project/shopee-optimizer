@@ -423,6 +423,40 @@ def translate_product(product):
 # 4. 画像テキスト英語化（OpenAI）
 # ============================================================
 
+def has_japanese_text(openai_key, image_path):
+    """画像に日本語テキストが含まれるかgpt-4o-miniで判定。コスト: ~$0.01/枚"""
+    if not HAS_OPENAI:
+        return True  # 判定できない場合は翻訳する
+
+    client = OpenAI(api_key=openai_key)
+
+    with open(image_path, "rb") as f:
+        image_bytes = f.read()
+
+    base64_image = base64.b64encode(image_bytes).decode("utf-8")
+
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}", "detail": "low"}},
+                    {"type": "text", "text": "Does this image contain Japanese text (hiragana, katakana, or kanji)? Reply ONLY 'yes' or 'no'."},
+                ],
+            }],
+            max_tokens=5,
+            temperature=0,
+        )
+        answer = resp.choices[0].message.content.strip().lower()
+        has_text = answer.startswith("yes")
+        logger.info("日本語テキスト判定 (%s): %s", Path(image_path).name, "あり" if has_text else "なし")
+        return has_text
+    except Exception as e:
+        logger.warning("日本語テキスト判定失敗 (%s): %s — 翻訳対象とします", Path(image_path).name, e)
+        return True  # 判定失敗時は安全側（翻訳する）
+
+
 def translate_image_text(openai_key, image_path, output_path, product):
     """画像内の日本語テキストを英語に置換"""
     if not HAS_OPENAI:
