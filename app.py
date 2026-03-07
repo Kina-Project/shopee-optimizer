@@ -35,6 +35,7 @@ from shopee_core import (
     has_japanese_text,
     generate_video,
     ensure_drive_folder,
+    list_drive_folder_images,
     upload_images_to_drive,
     upload_translated_images_to_drive,
     upload_video_to_drive,
@@ -55,6 +56,7 @@ MAX_BATCH_SIZE = 10
 EST_PER_PRODUCT_SEC = 165
 
 BATCH_STORE = {}
+BATCH_PAUSE_REQUESTS: dict[str, bool] = {}
 
 STEP_NAMES = {
     1: "Amazon商品情報を取得",
@@ -668,7 +670,10 @@ select:focus,input[type="text"]:focus{outline:none;border-color:var(--c-brand);b
 
   <div class="card hidden" id="progressSec">
     <div class="section-label"><span class="num">2</span>処理進捗</div>
-    <div id="progressText" class="small" style="margin-bottom:10px"></div>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+      <div id="progressText" class="small" style="flex:1"></div>
+      <button id="pauseBtn" type="button" class="btn btn-ghost btn-sm hidden" onclick="pauseBatch()" style="color:#dc2626;border-color:#dc2626">一時停止</button>
+    </div>
     <div id="productTabs" class="tabs"></div>
     <div id="productPanel" class="progress-panel"></div>
     <div id="log"></div>
@@ -901,8 +906,21 @@ function renderActiveProductPanel(){
   root.innerHTML=`${header}${banner}<ul class="steps">${steps}</ul>`;
 }
 
+async function pauseBatch(){
+  if(!currentBatchId){alert('バッチIDが不明です');return}
+  const btn=document.getElementById('pauseBtn');
+  if(btn){btn.disabled=true;btn.textContent='停止要求中...';}
+  try{
+    const res=await fetch(`/api/batch/${encodeURIComponent(currentBatchId)}/pause`,{method:'POST'});
+    if(!res.ok){const d=await res.json().catch(()=>({}));throw new Error(d.detail||`HTTP ${res.status}`);}
+  }catch(e){
+    alert('一時停止リクエスト失敗: '+e.message);
+    if(btn){btn.disabled=false;btn.textContent='一時停止';}
+  }
+}
+
 async function resumeBatch(batchId){
-  if(!confirm('APIチャージ済みですか？バッチ処理を再開します。')) return;
+  if(!confirm('バッチ処理を再開しますか？')) return;
   const resumeBar=document.getElementById('batchResumeBar');
   if(resumeBar) resumeBar.remove();
   const btn=document.getElementById('runBtn');
@@ -927,6 +945,8 @@ async function resumeBatch(batchId){
   renderActiveProductPanel();
   startElapsedTimer();
   document.getElementById('progressText').textContent='バッチ再開中...';
+  const pauseBtn2=document.getElementById('pauseBtn');
+  if(pauseBtn2){pauseBtn2.classList.remove('hidden');pauseBtn2.disabled=false;pauseBtn2.textContent='一時停止';}
 
   try{
     const res=await fetch(`/api/batch/${batchId}/resume`,{method:'POST'});
@@ -985,6 +1005,8 @@ async function runBatch(){
   const btn=document.getElementById('runBtn');
   btn.disabled=true;
   btn.innerHTML='<span class="btn-spinner"></span>処理中...';
+  const pauseBtn=document.getElementById('pauseBtn');
+  if(pauseBtn){pauseBtn.classList.remove('hidden');pauseBtn.disabled=false;pauseBtn.textContent='一時停止';}
   lastStreamEventAt=Date.now();
   if(streamWatchTimer){clearInterval(streamWatchTimer);}
   streamWatchTimer=setInterval(()=>{
@@ -1115,6 +1137,8 @@ function handleEvent(evt){
     alert(evt.message);
   }else if(evt.type==='batch_stopped'){
     stopElapsedTimer();
+    const pb=document.getElementById('pauseBtn');
+    if(pb) pb.classList.add('hidden');
     logLine(`バッチ停止: ${evt.message}`);
     for(let i=(evt.stopped_at_index||0)+1;i<progressProducts.length;i++){
       progressProducts[i].status='skipped';
@@ -1127,11 +1151,12 @@ function handleEvent(evt){
       const resumeDiv=document.createElement('div');
       resumeDiv.id='batchResumeBar';
       resumeDiv.style.cssText='background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:16px;margin:12px 0;text-align:center;';
+      const isPaused=evt.message&&evt.message.includes('一時停止');
       resumeDiv.innerHTML=`
         <p style="margin:0 0 10px;color:#92400e;font-weight:600">${esc(evt.message)}</p>
         <button id="resumeBatchBtn" onclick="resumeBatch('${esc(stoppedBatchId)}')"
           style="background:var(--c-brand);color:#fff;border:none;padding:10px 28px;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">
-          チャージ後にバッチ再開
+          ${isPaused?'バッチ再開':'チャージ後にバッチ再開'}
         </button>
       `;
       const panel=document.getElementById('progressPanel');
@@ -1162,6 +1187,8 @@ function handleEvent(evt){
     logLine(`商品 ${evt.index+1} 完了: ${evt.asin}`);
   }else if(evt.type==='all_done'){
     stopElapsedTimer();
+    const pb2=document.getElementById('pauseBtn');
+    if(pb2) pb2.classList.add('hidden');
     reviewProducts=evt.results||reviewProducts;
     activeReviewProductIndex=0;
     renderReview();
@@ -1774,6 +1801,12 @@ async def history_asin_page(asin: str):
         for p in sorted(images_dir.glob("*")):
             if p.suffix.lower() in (".jpg", ".jpeg", ".png"):
                 images_html.append(f"<img src='/files/{html.escape(asin)}/images/{html.escape(p.name)}' style='width:150px;border-radius:10px;border:1px solid #e8ebf0;background:#fafbfc'/>")
+    if not images_html:
+        folder_id = parse_drive_folder_id(first.get("drive_folder_url", ""))
+        if folder_id:
+            drive_ids = list_drive_folder_images(folder_id, config=get_config())
+            for did in drive_ids:
+                images_html.append(f"<img src='https://lh3.googleusercontent.com/d/{html.escape(did)}=w400' style='width:150px;border-radius:10px;border:1px solid #e8ebf0;background:#fafbfc'/>")
 
     entries_html = []
     for r in rows:
@@ -1829,7 +1862,7 @@ a{{color:#ee4d2d;text-decoration:none;transition:color .2s}} a:hover{{color:#d43
   </div>
   <div class="card">
     <h2>商品画像</h2>
-    <div class="grid">{''.join(images_html) if images_html else '<div style="font-size:12px;color:#9298a8">Cloud Run上に画像がないため表示不可</div>'}</div>
+    <div class="grid">{''.join(images_html) if images_html else '<div style="font-size:12px;color:#9298a8">画像なし</div>'}</div>
   </div>
   <div class="card">
     <h2>動画生成履歴</h2>
@@ -2522,6 +2555,16 @@ async def process_stream(request: Request):
             return sse_event(payload)
 
         for idx, url in enumerate(urls):
+            # 一時停止チェック
+            if BATCH_PAUSE_REQUESTS.pop(batch_id, False):
+                remaining = len(urls) - idx
+                yield emit({"type": "batch_stopped", "message": f"一時停止しました。残り{remaining}件の処理を中断しています。", "stopped_at_index": idx, "remaining_count": remaining})
+                BATCH_STORE[batch_id]["stopped_reason"] = "user_paused"
+                BATCH_STORE[batch_id]["stopped_at_index"] = idx
+                BATCH_STORE[batch_id]["stopped_at_step"] = 1
+                save_batch_state(batch_id)
+                return
+
             yield emit({"type": "product_start", "index": idx, "total_products": len(urls), "url": url})
 
             config = get_config()
@@ -2877,6 +2920,7 @@ async def process_stream(request: Request):
 
         BATCH_STORE[batch_id]["results"] = results
         BATCH_STORE[batch_id]["updated_at"] = now_iso()
+        BATCH_PAUSE_REQUESTS.pop(batch_id, None)
         save_batch_state(batch_id)
 
         yield emit({"type": "all_done", "batch_id": batch_id, "results": results})
@@ -2892,9 +2936,19 @@ async def process_stream(request: Request):
     )
 
 
+@app.post("/api/batch/{batch_id}/pause")
+async def pause_batch(batch_id: str):
+    """処理中のバッチに一時停止リクエストを送る。現在の商品完了後に停止。"""
+    batch = BATCH_STORE.get(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="バッチが見つかりません")
+    BATCH_PAUSE_REQUESTS[batch_id] = True
+    return {"status": "pause_requested"}
+
+
 @app.post("/api/batch/{batch_id}/resume")
 async def resume_batch(batch_id: str):
-    """残高不足で中断したバッチを再開する。stopped_at_indexの商品から処理を続行。"""
+    """中断したバッチを再開する。stopped_at_indexの商品から処理を続行。"""
     batch = BATCH_STORE.get(batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="バッチが見つかりません")
@@ -2935,6 +2989,17 @@ async def resume_batch(batch_id: str):
 
         for resume_i, url in enumerate(remaining_urls):
             idx = stopped_at_index + resume_i
+
+            # 一時停止チェック
+            if BATCH_PAUSE_REQUESTS.pop(batch_id, False):
+                remaining = len(remaining_urls) - resume_i
+                yield emit({"type": "batch_stopped", "message": f"一時停止しました。残り{remaining}件の処理を中断しています。", "stopped_at_index": idx, "remaining_count": remaining})
+                BATCH_STORE[batch_id]["stopped_reason"] = "user_paused"
+                BATCH_STORE[batch_id]["stopped_at_index"] = idx
+                BATCH_STORE[batch_id]["stopped_at_step"] = 1
+                save_batch_state(batch_id)
+                return
+
             yield emit({"type": "product_start", "index": idx, "total_products": len(urls), "url": url})
 
             total = 7
@@ -3212,6 +3277,7 @@ async def resume_batch(batch_id: str):
         BATCH_STORE[batch_id].pop("stopped_reason", None)
         BATCH_STORE[batch_id].pop("stopped_at_index", None)
         BATCH_STORE[batch_id].pop("stopped_at_step", None)
+        BATCH_PAUSE_REQUESTS.pop(batch_id, None)
         save_batch_state(batch_id)
         yield emit({"type": "all_done", "batch_id": batch_id, "results": results})
 
