@@ -1858,18 +1858,45 @@ async def history_asin_page(asin: str):
             for did in drive_ids:
                 images_html.append(f"<img src='https://lh3.googleusercontent.com/d/{html.escape(did)}=w400' style='width:150px;border-radius:10px;border:1px solid #e8ebf0;background:#fafbfc'/>")
 
+    # ローカル動画ファイルを検索
+    videos_dir = OUTPUT_BASE / asin / "videos"
+    local_videos: dict[str, str] = {}  # version -> url
+    if videos_dir.exists():
+        for vp in sorted(videos_dir.glob("*.mp4")):
+            ver = vp.stem  # e.g. "v1", "v2"
+            local_videos[ver] = f"/files/{html.escape(asin)}/videos/{html.escape(vp.name)}"
+
+    # 最新の動画URLを決定（ローカル優先 → Drive）
+    latest_video_url = ""
+    latest_video_drive = ""
+    for r in rows:
+        ver = r.get("version", "")
+        if ver in local_videos:
+            latest_video_url = local_videos[ver]
+            break
+        if r.get("drive_file_url", ""):
+            latest_video_drive = r["drive_file_url"]
+            break
+
     entries_html = []
     for r in rows:
         vid = r.get("drive_file_url", "")
+        ver = r.get("version", "")
         selected_mark = "<span style='color:#16a34a;font-weight:600'>YES</span>" if r.get('selected','').upper()=='YES' else ''
+        # 再生ボタン: ローカルファイルがあればインライン再生、なければDriveリンク
+        play_html = ""
+        if ver in local_videos:
+            play_html = f"<button onclick=\"playVideo('{html.escape(local_videos[ver])}')\" style=\"background:#ee4d2d;color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer\">&#9654; 再生</button>"
+        if vid:
+            play_html += f" <a href=\"{html.escape(vid)}\" target=\"_blank\" style=\"font-size:11px\">Drive &rarr;</a>"
         entries_html.append(
             "<tr>"
             f"<td>{html.escape(r.get('timestamp',''))}</td>"
-            f"<td style='font-weight:600'>{html.escape(r.get('version',''))}</td>"
+            f"<td style='font-weight:600'>{html.escape(ver)}</td>"
             f"<td>{html.escape(r.get('effect',''))}</td>"
             f"<td>{html.escape(r.get('model',''))}</td>"
             f"<td>{html.escape(r.get('memo',''))}</td>"
-            f"<td>{('<a href=\"'+html.escape(vid)+'\" target=\"_blank\">動画 &rarr;</a>') if vid else ''}</td>"
+            f"<td>{play_html}</td>"
             f"<td>{selected_mark}</td>"
             "</tr>"
         )
@@ -1915,17 +1942,81 @@ a{{color:#ee4d2d;text-decoration:none;transition:color .2s}} a:hover{{color:#d43
     <div class="grid">{''.join(images_html) if images_html else '<div style="font-size:12px;color:#9298a8">画像なし</div>'}</div>
   </div>
   <div class="card">
+    <h2>動画プレビュー</h2>
+    <div id="video-player-area" style="margin-bottom:16px">
+      {f'<video id="main-video" src="{latest_video_url}" controls style="max-width:480px;width:100%;border-radius:12px;background:#000"></video>' if latest_video_url else (f'<div style="font-size:13px;color:#9298a8">ローカル動画なし。<a href="{html.escape(latest_video_drive)}" target="_blank">Driveで再生 &rarr;</a></div>' if latest_video_drive else '<div style="font-size:13px;color:#9298a8">動画なし</div>')}
+    </div>
+    {'<div style="margin-top:16px;padding:16px;background:#f6f7fb;border-radius:12px"><div style="font-weight:600;font-size:13px;margin-bottom:10px">動画を再生成</div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><select id="regen-effect" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;background:#fff"><option value="zoom">zoom</option><option value="unbox">unbox</option><option value="steam">steam</option><option value="condensation">condensation</option><option value="pickup">pickup</option></select><input id="regen-memo" type="text" placeholder="メモ" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;min-width:120px"/><input id="regen-prompt" type="text" placeholder="追加指示（例: 商品を正面から）" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;flex:1;min-width:180px"/><button id="regen-btn" onclick="regenerateVideo()" style="padding:6px 16px;background:#ee4d2d;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap">再生成</button></div><div id="regen-status" style="display:none;margin-top:8px;font-size:12px;color:#5f6577"></div></div>' if found_batch_id else '<div style="margin-top:12px;font-size:12px;color:#9298a8">※ バッチデータが見つからないため再生成は利用できません。メインページから再処理してください。</div>'}
+  </div>
+  <div class="card">
     <h2>動画生成履歴</h2>
     <div style="font-size:12px;color:#9298a8;margin-bottom:10px">{'※ 動画生成シート未作成のため商品データシート履歴を表示中' if from_product_sheet else ''}</div>
     <div style="overflow-x:auto">
     <table>
-      <thead><tr><th>日時</th><th>Version</th><th>Effect</th><th>Model</th><th>Memo</th><th>Drive</th><th>確定</th></tr></thead>
+      <thead><tr><th>日時</th><th>Version</th><th>Effect</th><th>Model</th><th>Memo</th><th>再生</th><th>確定</th></tr></thead>
       <tbody>{''.join(entries_html)}</tbody>
     </table>
     </div>
   </div>
   {_build_restart_card_html(found_batch_id, asin) if found_batch_id else ''}
-</div></body></html>"""
+</div>
+<script>
+function playVideo(url) {{
+  const area = document.getElementById('video-player-area');
+  let vid = document.getElementById('main-video');
+  if (vid) {{
+    vid.src = url;
+    vid.play();
+  }} else {{
+    area.innerHTML = '<video id="main-video" src="' + url + '" controls autoplay style="max-width:480px;width:100%;border-radius:12px;background:#000"></video>';
+  }}
+  area.scrollIntoView({{ behavior: 'smooth', block: 'nearest' }});
+}}
+
+async function regenerateVideo() {{
+  const btn = document.getElementById('regen-btn');
+  const status = document.getElementById('regen-status');
+  const effect = document.getElementById('regen-effect').value;
+  const memo = document.getElementById('regen-memo').value;
+  const promptExtra = document.getElementById('regen-prompt').value;
+
+  btn.disabled = true;
+  btn.textContent = '生成中...';
+  status.style.display = 'block';
+  status.textContent = '動画を生成しています。30〜120秒かかる場合があります...';
+  status.style.color = '#f59e0b';
+
+  try {{
+    const res = await fetch('/regenerate-video', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{
+        batch_id: {json.dumps(found_batch_id or "")},
+        asin: {json.dumps(asin)},
+        effect: effect,
+        memo: memo,
+        prompt_extra: promptExtra
+      }})
+    }});
+    const data = await res.json();
+    if (!res.ok) {{
+      status.textContent = 'エラー: ' + (data.detail || '再生成に失敗しました');
+      status.style.color = '#dc2626';
+      return;
+    }}
+    status.textContent = '再生成完了！3秒後にリロードします...';
+    status.style.color = '#16a34a';
+    setTimeout(() => location.reload(), 3000);
+  }} catch (e) {{
+    status.textContent = 'エラー: ' + e.message;
+    status.style.color = '#dc2626';
+  }} finally {{
+    btn.disabled = false;
+    btn.textContent = '再生成';
+  }}
+}}
+</script>
+</body></html>"""
     return page
 
 
