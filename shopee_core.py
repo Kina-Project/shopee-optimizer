@@ -1186,7 +1186,7 @@ def get_folder_first_image_thumbnail(folder_url, config=None):
 # 7. スプレッドシート書き込み
 # ============================================================
 
-def write_to_spreadsheet(url, product, image_count, image_folder_url="", config=None):
+def write_to_spreadsheet(url, product, image_count, image_folder_url="", config=None, status="完了"):
     """商品データをスプレッドシートに書き込み"""
     if config is None:
         config = get_config()
@@ -1210,7 +1210,9 @@ def write_to_spreadsheet(url, product, image_count, image_folder_url="", config=
 
     ws = ss.worksheet("商品データ")
     existing = ws.col_values(3)
-    asin = product["asin"]
+    asin = product.get("asin", "")
+    if not asin:
+        return False
 
     now = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
 
@@ -1236,7 +1238,7 @@ def write_to_spreadsheet(url, product, image_count, image_folder_url="", config=
         product.get("description_en", ""),
         image_folder_url,
         str(image_count),
-        "完了",
+        status,
         now,
     ]
 

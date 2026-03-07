@@ -16,7 +16,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from shopee_core import (
@@ -245,6 +245,31 @@ def drive_thumb_url(file_id: str) -> str:
     if not file_id:
         return ""
     return f"https://drive.google.com/thumbnail?id={file_id}&sz=w400"
+
+
+def write_step_checkpoint(
+    url: str,
+    product: dict,
+    image_count: int,
+    folder_url: str,
+    config: dict,
+    status: str,
+) -> str:
+    """各ステップ完了時の中間状態をシートへ保存する。失敗時はエラーメッセージを返す。"""
+    try:
+        ok = write_to_spreadsheet(
+            url,
+            product,
+            image_count,
+            folder_url,
+            config,
+            status=status,
+        )
+        if not ok:
+            return "スプレッドシートへの中間保存に失敗しました（認証/設定を確認してください）"
+        return ""
+    except Exception as e:
+        return str(e)
 
 
 def parse_ts(value: str) -> datetime:
@@ -1243,9 +1268,23 @@ function driveImgFallback(img,asin,idx){
 }
 function driveVideoFallback(video,driveUrl){
   if(!driveUrl)return;
+  // driveUrlからファイルIDを抽出してプロキシ経由で再生
+  const m=driveUrl.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if(m){
+    const proxyUrl='/drive-video/'+m[1];
+    video.onerror=function(){
+      // プロキシも失敗したらDriveリンクにフォールバック
+      const link=document.createElement('a');
+      link.href=driveUrl;link.target='_blank';
+      link.style.cssText='display:flex;width:300px;height:200px;align-items:center;justify-content:center;background:var(--c-bg);border-radius:var(--radius);color:var(--c-brand);font-size:13px;text-decoration:none;border:1px dashed var(--c-border-light)';
+      link.textContent='Driveで動画を再生 →';
+      video.parentNode.replaceChild(link,video);
+    };
+    video.src=proxyUrl;
+    return;
+  }
   const link=document.createElement('a');
-  link.href=driveUrl;
-  link.target='_blank';
+  link.href=driveUrl;link.target='_blank';
   link.style.cssText='display:flex;width:300px;height:200px;align-items:center;justify-content:center;background:var(--c-bg);border-radius:var(--radius);color:var(--c-brand);font-size:13px;text-decoration:none;border:1px dashed var(--c-border-light)';
   link.textContent='Driveで動画を再生 →';
   video.parentNode.replaceChild(link,video);
@@ -1819,18 +1858,45 @@ async def history_asin_page(asin: str):
             for did in drive_ids:
                 images_html.append(f"<img src='https://lh3.googleusercontent.com/d/{html.escape(did)}=w400' style='width:150px;border-radius:10px;border:1px solid #e8ebf0;background:#fafbfc'/>")
 
+    # ローカル動画ファイルを検索
+    videos_dir = OUTPUT_BASE / asin / "videos"
+    local_videos: dict[str, str] = {}  # version -> url
+    if videos_dir.exists():
+        for vp in sorted(videos_dir.glob("*.mp4")):
+            ver = vp.stem  # e.g. "v1", "v2"
+            local_videos[ver] = f"/files/{html.escape(asin)}/videos/{html.escape(vp.name)}"
+
+    # 最新の動画URLを決定（ローカル優先 → Drive）
+    latest_video_url = ""
+    latest_video_drive = ""
+    for r in rows:
+        ver = r.get("version", "")
+        if ver in local_videos:
+            latest_video_url = local_videos[ver]
+            break
+        if r.get("drive_file_url", ""):
+            latest_video_drive = r["drive_file_url"]
+            break
+
     entries_html = []
     for r in rows:
         vid = r.get("drive_file_url", "")
+        ver = r.get("version", "")
         selected_mark = "<span style='color:#16a34a;font-weight:600'>YES</span>" if r.get('selected','').upper()=='YES' else ''
+        # 再生ボタン: ローカルファイルがあればインライン再生、なければDriveリンク
+        play_html = ""
+        if ver in local_videos:
+            play_html = f"<button onclick=\"playVideo('{html.escape(local_videos[ver])}')\" style=\"background:#ee4d2d;color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer\">&#9654; 再生</button>"
+        if vid:
+            play_html += f" <a href=\"{html.escape(vid)}\" target=\"_blank\" style=\"font-size:11px\">Drive &rarr;</a>"
         entries_html.append(
             "<tr>"
             f"<td>{html.escape(r.get('timestamp',''))}</td>"
-            f"<td style='font-weight:600'>{html.escape(r.get('version',''))}</td>"
+            f"<td style='font-weight:600'>{html.escape(ver)}</td>"
             f"<td>{html.escape(r.get('effect',''))}</td>"
             f"<td>{html.escape(r.get('model',''))}</td>"
             f"<td>{html.escape(r.get('memo',''))}</td>"
-            f"<td>{('<a href=\"'+html.escape(vid)+'\" target=\"_blank\">動画 &rarr;</a>') if vid else ''}</td>"
+            f"<td>{play_html}</td>"
             f"<td>{selected_mark}</td>"
             "</tr>"
         )
@@ -1876,17 +1942,88 @@ a{{color:#ee4d2d;text-decoration:none;transition:color .2s}} a:hover{{color:#d43
     <div class="grid">{''.join(images_html) if images_html else '<div style="font-size:12px;color:#9298a8">画像なし</div>'}</div>
   </div>
   <div class="card">
+    <h2>動画プレビュー</h2>
+    <div id="video-player-area" style="margin-bottom:16px">
+      {f'<video id="main-video" src="{latest_video_url}" controls style="max-width:480px;width:100%;border-radius:12px;background:#000"></video>' if latest_video_url else (f'<div style="font-size:13px;color:#9298a8">ローカル動画なし。<a href="{html.escape(latest_video_drive)}" target="_blank">Driveで再生 &rarr;</a></div>' if latest_video_drive else '<div style="font-size:13px;color:#9298a8">動画なし</div>')}
+    </div>
+    {'<div style="margin-top:16px;padding:16px;background:#f6f7fb;border-radius:12px"><div style="font-weight:600;font-size:13px;margin-bottom:10px">動画を再生成</div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><select id="regen-effect" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;background:#fff"><option value="zoom">zoom</option><option value="unbox">unbox</option><option value="steam">steam</option><option value="condensation">condensation</option><option value="pickup">pickup</option></select><input id="regen-memo" type="text" placeholder="メモ" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;min-width:120px"/><input id="regen-prompt" type="text" placeholder="追加指示（例: 商品を正面から）" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;flex:1;min-width:180px"/><button id="regen-btn" onclick="regenerateVideo()" style="padding:6px 16px;background:#ee4d2d;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap">再生成</button></div><div id="regen-status" style="display:none;margin-top:8px;font-size:12px;color:#5f6577"></div></div>' if found_batch_id else '<div style="margin-top:12px;font-size:12px;color:#9298a8">※ バッチデータが見つからないため再生成は利用できません。メインページから再処理してください。</div>'}
+  </div>
+  <div class="card">
     <h2>動画生成履歴</h2>
     <div style="font-size:12px;color:#9298a8;margin-bottom:10px">{'※ 動画生成シート未作成のため商品データシート履歴を表示中' if from_product_sheet else ''}</div>
     <div style="overflow-x:auto">
     <table>
-      <thead><tr><th>日時</th><th>Version</th><th>Effect</th><th>Model</th><th>Memo</th><th>Drive</th><th>確定</th></tr></thead>
+      <thead><tr><th>日時</th><th>Version</th><th>Effect</th><th>Model</th><th>Memo</th><th>再生</th><th>確定</th></tr></thead>
       <tbody>{''.join(entries_html)}</tbody>
     </table>
     </div>
   </div>
   {_build_restart_card_html(found_batch_id, asin) if found_batch_id else ''}
-</div></body></html>"""
+</div>
+<script>
+function playVideo(url) {{
+  const area = document.getElementById('video-player-area');
+  let vid = document.getElementById('main-video');
+  if (vid) {{
+    vid.src = url;
+    vid.play();
+  }} else {{
+    const v = document.createElement('video');
+    v.id = 'main-video';
+    v.src = url;
+    v.controls = true;
+    v.autoplay = true;
+    v.style.cssText = 'max-width:480px;width:100%;border-radius:12px;background:#000';
+    area.innerHTML = '';
+    area.appendChild(v);
+  }}
+  area.scrollIntoView({{ behavior: 'smooth', block: 'nearest' }});
+}}
+
+async function regenerateVideo() {{
+  const btn = document.getElementById('regen-btn');
+  const status = document.getElementById('regen-status');
+  const effect = document.getElementById('regen-effect').value;
+  const memo = document.getElementById('regen-memo').value;
+  const promptExtra = document.getElementById('regen-prompt').value;
+
+  btn.disabled = true;
+  btn.textContent = '生成中...';
+  status.style.display = 'block';
+  status.textContent = '動画を生成しています。30〜120秒かかる場合があります...';
+  status.style.color = '#f59e0b';
+
+  try {{
+    const res = await fetch('/regenerate-video', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{
+        batch_id: {json.dumps(found_batch_id or "")},
+        asin: {json.dumps(asin)},
+        effect: effect,
+        memo: memo,
+        prompt_extra: promptExtra
+      }})
+    }});
+    const data = await res.json();
+    if (!res.ok) {{
+      status.textContent = 'エラー: ' + (data.detail || '再生成に失敗しました');
+      status.style.color = '#dc2626';
+      return;
+    }}
+    status.textContent = '再生成完了！3秒後にリロードします...';
+    status.style.color = '#16a34a';
+    setTimeout(() => location.reload(), 3000);
+  }} catch (e) {{
+    status.textContent = 'エラー: ' + e.message;
+    status.style.color = '#dc2626';
+  }} finally {{
+    btn.disabled = false;
+    btn.textContent = '再生成';
+  }}
+}}
+</script>
+</body></html>"""
     return page
 
 
@@ -2260,6 +2397,16 @@ async def restart_from_step(request: Request):
                     "features_en": product.get("features_en", []),
                 }
             })
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                len(image_paths),
+                product_state.get("drive_folder_url", ""),
+                config,
+                "Step3完了: 英語翻訳 + 逆翻訳",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": 0, "step": 3, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
         # --- Step 4: 画像テキスト英語化（1枚ずつ進捗報告） ---
         if from_step <= 4:
@@ -2325,6 +2472,16 @@ async def restart_from_step(request: Request):
                     "type": "step_done", "index": 0, "step": 4,
                     "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}
                 })
+                checkpoint_err = write_step_checkpoint(
+                    url,
+                    product,
+                    len(image_paths),
+                    product_state.get("drive_folder_url", ""),
+                    config,
+                    "Step4完了: 画像テキスト英語化",
+                )
+                if checkpoint_err:
+                    yield emit({"type": "step_warn", "index": 0, "step": 4, "message": f"シート中間記録エラー: {checkpoint_err}"})
             else:
                 yield emit({"type": "step_skip", "index": 0, "step": 4, "name": "画像テキスト英語化", "reason": "OpenAIキー未設定"})
 
@@ -2368,6 +2525,17 @@ async def restart_from_step(request: Request):
                 "type": "step_done", "index": 0, "step": 5,
                 "data": {"video_url": video_record["video_url"] if video_record else None}
             })
+            step5_status = "Step5完了: 動画生成" if video_record else "Step5完了: 動画生成（未生成）"
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                len(image_paths),
+                product_state.get("drive_folder_url", ""),
+                config,
+                step5_status,
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": 0, "step": 5, "message": f"シート中間記録エラー: {checkpoint_err}"})
         else:
             # Step 6以降から開始の場合、既存の最新動画を使う
             existing_videos = product_state.get("videos", [])
@@ -2405,6 +2573,16 @@ async def restart_from_step(request: Request):
                 return
 
             yield emit({"type": "step_done", "index": 0, "step": 6, "data": {"drive_folder_url": folder_url}})
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                len(image_paths),
+                folder_url,
+                config,
+                "Step6完了: Google Driveアップロード",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": 0, "step": 6, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             if video_record:
                 try:
@@ -2428,7 +2606,7 @@ async def restart_from_step(request: Request):
         if from_step <= 7:
             yield emit({"type": "step", "index": 0, "step": 7, "total": total, "name": "スプレッドシート書き込み", "est": "2秒"})
             try:
-                write_to_spreadsheet(url, product, len(image_paths), folder_url, config)
+                write_to_spreadsheet(url, product, len(image_paths), folder_url, config, status="完了")
                 yield emit({"type": "step_done", "index": 0, "step": 7, "data": {"finalized": True}})
             except Exception as e:
                 yield emit({"type": "step_warn", "index": 0, "step": 7, "message": f"スプレッドシートエラー: {e}"})
@@ -2479,6 +2657,34 @@ async def serve_file(asin: str, path: str):
         ".png": "image/png", ".mp4": "video/mp4", ".json": "application/json",
     }
     return FileResponse(file_path, media_type=media_types.get(suffix, "application/octet-stream"))
+
+
+@app.get("/drive-video/{file_id}")
+async def drive_video_proxy(file_id: str):
+    """Google Driveの動画ファイルをプロキシしてインライン再生可能にする。"""
+    if not re.match(r'^[a-zA-Z0-9_-]+$', file_id):
+        raise HTTPException(status_code=400, detail="Invalid file ID")
+    try:
+        from shopee_core import _get_drive_service
+        config = get_config()
+        drive = _get_drive_service(config)
+        import io
+        from googleapiclient.http import MediaIoBaseDownload
+        request = drive.files().get_media(fileId=file_id)
+        buf = io.BytesIO()
+        downloader = MediaIoBaseDownload(buf, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        buf.seek(0)
+        return Response(
+            content=buf.read(),
+            media_type="video/mp4",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+    except Exception as e:
+        logger.warning("Drive video proxy failed for %s: %s", file_id, e)
+        raise HTTPException(status_code=404, detail="動画を取得できません")
 
 
 @app.post("/process-stream")
@@ -2617,6 +2823,16 @@ async def process_stream(request: Request):
                     "credits_remaining": product.get("credits_remaining", "?"),
                 }
             })
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                0,
+                folder_url,
+                config,
+                "Step1完了: Amazon商品情報を取得",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 1, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             # Step 2: 画像ダウンロード + 即座にDrive保存
             yield emit({"type": "step", "index": idx, "step": 2, "total": total, "name": "画像ダウンロード", "est": "3秒"})
@@ -2649,6 +2865,16 @@ async def process_stream(request: Request):
                 "image_shortage": image_shortage,
             }
             yield emit({"type": "step_done", "index": idx, "step": 2, "data": step2_data})
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                image_count,
+                folder_url,
+                config,
+                "Step2完了: 画像ダウンロード",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 2, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             if image_shortage:
                 yield emit({
@@ -2673,6 +2899,16 @@ async def process_stream(request: Request):
                     "features_en": product.get("features_en", []),
                 }
             })
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                image_count,
+                folder_url,
+                config,
+                "Step3完了: 英語翻訳 + 逆翻訳",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 3, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             # Step 4: 画像テキスト英語化 + 即座にDrive保存（1枚ずつ進捗報告）
             translated_image_paths = []
@@ -2754,6 +2990,16 @@ async def process_stream(request: Request):
                     "type": "step_done", "index": idx, "step": 4,
                     "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}
                 })
+                checkpoint_err = write_step_checkpoint(
+                    url,
+                    product,
+                    image_count,
+                    folder_url,
+                    config,
+                    "Step4完了: 画像テキスト英語化",
+                )
+                if checkpoint_err:
+                    yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"シート中間記録エラー: {checkpoint_err}"})
             else:
                 yield emit({"type": "step_skip", "index": idx, "step": 4, "name": "画像テキスト英語化", "reason": "OpenAIキー未設定またはスキップ指定"})
 
@@ -2814,6 +3060,17 @@ async def process_stream(request: Request):
                 "type": "step_done", "index": idx, "step": 5,
                 "data": {"video_url": video_record["video_url"] if video_record else None}
             })
+            step5_status = "Step5完了: 動画生成" if video_record else "Step5完了: 動画生成（未生成）"
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                image_count,
+                folder_url,
+                config,
+                step5_status,
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 5, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             # Step 6: Drive保存確認（逐次保存済みなので確認のみ）
             yield emit({"type": "step", "index": idx, "step": 6, "total": total, "name": "Google Drive保存確認", "est": "2秒"})
@@ -2847,6 +3104,16 @@ async def process_stream(request: Request):
                     continue
 
             yield emit({"type": "step_done", "index": idx, "step": 6, "data": {"drive_folder_url": folder_url}})
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                image_count,
+                folder_url,
+                config,
+                "Step6完了: Google Drive保存確認",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 6, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             if video_record:
                 try:
@@ -2869,7 +3136,7 @@ async def process_stream(request: Request):
             # Step 7: スプレッドシート書き込み
             yield emit({"type": "step", "index": idx, "step": 7, "total": total, "name": "スプレッドシート書き込み", "est": "2秒"})
             try:
-                write_to_spreadsheet(url, product, len(image_paths), folder_url, config)
+                write_to_spreadsheet(url, product, len(image_paths), folder_url, config, status="完了")
                 yield emit({"type": "step_done", "index": idx, "step": 7, "data": {"finalized": auto_finalize}})
             except Exception as e:
                 yield emit({"type": "step_warn", "index": idx, "step": 7, "message": f"スプレッドシートエラー: {e}"})
@@ -3032,6 +3299,16 @@ async def resume_batch(batch_id: str):
                     "price": product.get("price", ""),
                 }
             })
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                0,
+                folder_url,
+                config,
+                "Step1完了: Amazon商品情報を取得",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 1, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             # Driveフォルダ作成
             try:
@@ -3068,6 +3345,16 @@ async def resume_batch(batch_id: str):
                     logger.warning("Resume Step2 Drive保存失敗: %s", e)
 
             yield emit({"type": "step_done", "index": idx, "step": 2, "data": {"image_count": image_count, "image_urls": image_urls, "image_shortage": image_shortage}})
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                image_count,
+                folder_url,
+                config,
+                "Step2完了: 画像ダウンロード",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 2, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             if image_shortage:
                 yield emit({"type": "step_warn", "index": idx, "step": 2, "message": f"画像が{image_count}枚のみです（3枚未満）。レビュー画面から補完検索できます。"})
@@ -3089,6 +3376,16 @@ async def resume_batch(batch_id: str):
                     "features_en": product.get("features_en", []),
                 }
             })
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                image_count,
+                folder_url,
+                config,
+                "Step3完了: 英語翻訳 + 逆翻訳",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 3, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             # Step 4: 画像テキスト英語化
             translated_image_paths = []
@@ -3155,6 +3452,16 @@ async def resume_batch(batch_id: str):
 
                 translated_image_urls = [f"/files/{asin}/images_en/{Path(p).name}" for p in translated_image_paths]
                 yield emit({"type": "step_done", "index": idx, "step": 4, "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}})
+                checkpoint_err = write_step_checkpoint(
+                    url,
+                    product,
+                    image_count,
+                    folder_url,
+                    config,
+                    "Step4完了: 画像テキスト英語化",
+                )
+                if checkpoint_err:
+                    yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"シート中間記録エラー: {checkpoint_err}"})
             else:
                 yield emit({"type": "step_skip", "index": idx, "step": 4, "name": "画像テキスト英語化", "reason": "OpenAIキー未設定またはスキップ指定"})
 
@@ -3202,10 +3509,35 @@ async def resume_batch(batch_id: str):
                     logger.info("Resume Step5: 動画をDriveに保存完了")
                 except Exception as e:
                     logger.warning("Resume Step5 Drive保存失敗: %s", e)
+            yield emit({
+                "type": "step_done", "index": idx, "step": 5,
+                "data": {"video_url": video_record["video_url"] if video_record else None}
+            })
+            step5_status = "Step5完了: 動画生成" if video_record else "Step5完了: 動画生成（未生成）"
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                image_count,
+                folder_url,
+                config,
+                step5_status,
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 5, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             # Step 6: Drive確認
             yield emit({"type": "step", "index": idx, "step": 6, "total": total, "name": "Driveアップロード確認", "est": "2秒"})
             yield emit({"type": "step_done", "index": idx, "step": 6, "data": {"drive_folder_url": folder_url, "drive_thumb_url": thumb_url}})
+            checkpoint_err = write_step_checkpoint(
+                url,
+                product,
+                image_count,
+                folder_url,
+                config,
+                "Step6完了: Driveアップロード確認",
+            )
+            if checkpoint_err:
+                yield emit({"type": "step_warn", "index": idx, "step": 6, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
             if video_record:
                 try:
@@ -3222,7 +3554,7 @@ async def resume_batch(batch_id: str):
             # Step 7: スプレッドシート書き込み
             yield emit({"type": "step", "index": idx, "step": 7, "total": total, "name": "スプレッドシート書き込み", "est": "2秒"})
             try:
-                write_to_spreadsheet(url, product, len(image_paths), folder_url, config)
+                write_to_spreadsheet(url, product, len(image_paths), folder_url, config, status="完了")
                 yield emit({"type": "step_done", "index": idx, "step": 7, "data": {"finalized": auto_finalize}})
             except Exception as e:
                 yield emit({"type": "step_warn", "index": idx, "step": 7, "message": f"スプレッドシートエラー: {e}"})
@@ -3441,6 +3773,7 @@ async def finalize(request: Request):
                 len(product.get("image_paths", [])),
                 folder_url,
                 config,
+                status="完了(確定)",
             )
             selected_video = next(
                 (v for v in product.get("videos", []) if v.get("version") == product.get("selected_version")),
