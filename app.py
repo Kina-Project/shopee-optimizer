@@ -7,6 +7,7 @@ import os
 import logging
 import re
 import shutil
+import time
 import uuid
 import html
 from urllib.parse import quote
@@ -30,6 +31,7 @@ from shopee_core import (
     download_images,
     translate_product,
     translate_images,
+    translate_image_text,
     generate_video,
     ensure_drive_folder,
     upload_images_to_drive,
@@ -789,8 +791,26 @@ function makeProgressItem(url=''){
     status:'waiting',
     steps:Array(7).fill('pending'),
     stepMessages:{},
+    stepStartedAt:{},
+    stepEst:{},
+    batchStartedAt:null,
   };
 }
+let elapsedTimer=null;
+function startElapsedTimer(){
+  if(elapsedTimer)clearInterval(elapsedTimer);
+  elapsedTimer=setInterval(()=>renderActiveProductPanel(),1000);
+}
+function stopElapsedTimer(){
+  if(elapsedTimer){clearInterval(elapsedTimer);elapsedTimer=null;}
+}
+window.addEventListener('beforeunload',function(e){
+  const btn=document.getElementById('runBtn');
+  if(btn&&btn.disabled){
+    e.preventDefault();
+    e.returnValue='処理中です。ページを離れると進行中の処理が中断されます。';
+  }
+});
 
 function initProgressTabs(urls){
   progressProducts = urls.map(u=>makeProgressItem(u));
@@ -860,11 +880,24 @@ function renderActiveProductPanel(){
       <div style="height:100%;width:${progressPct}%;background:var(--c-brand);border-radius:2px;transition:width .4s ease"></div>
     </div>`;
   const steps=STEP_NAMES.map((name,idx)=>{
+    const stepNum=idx+1;
     const s=p.steps[idx]||'pending';
-    const msg=p.stepMessages[idx+1] ? `<span class="small" style="margin-left:4px">${esc(p.stepMessages[idx+1])}</span>` : '';
-    return `<li><span class="step-dot step-${s}"></span><span style="${stepStatusStyle(s)}">Step${idx+1}</span> <span>${esc(name)}</span> <span style="${stepStatusStyle(s)}">${stepStatusText(s)}</span>${msg}</li>`;
+    const msg=p.stepMessages[stepNum] ? `<span class="small" style="margin-left:4px">${esc(p.stepMessages[stepNum])}</span>` : '';
+    let timeInfo='';
+    if(s==='running' && p.stepStartedAt[stepNum]){
+      const elapsed=Math.floor((Date.now()-p.stepStartedAt[stepNum])/1000);
+      const min=Math.floor(elapsed/60);
+      const sec=elapsed%60;
+      const elapsedStr=min>0?`${min}分${sec}秒`:`${sec}秒`;
+      const estStr=p.stepEst[stepNum]?` / 予測: ${p.stepEst[stepNum]}`:'';
+      timeInfo=`<span class="small" style="margin-left:6px;color:var(--c-warn)">${elapsedStr}経過${estStr}</span>`;
+    }
+    return `<li><span class="step-dot step-${s}"></span><span style="${stepStatusStyle(s)}">Step${idx+1}</span> <span>${esc(name)}</span> <span style="${stepStatusStyle(s)}">${stepStatusText(s)}</span>${timeInfo}${msg}</li>`;
   }).join('');
-  root.innerHTML=`${header}<ul class="steps">${steps}</ul>`;
+  // 処理中の注意バナー
+  const isRunning=p.steps.some(s=>s==='running');
+  const banner=isRunning?'<div style="background:#fef3c7;color:#92400e;padding:8px 12px;border-radius:6px;font-size:12px;margin-bottom:8px;text-align:center">処理中です。ページを更新・移動しないでください。</div>':'';
+  root.innerHTML=`${header}${banner}<ul class="steps">${steps}</ul>`;
 }
 
 async function runBatch(){
@@ -950,7 +983,9 @@ function handleEvent(evt){
     if(!progressProducts[evt.index]) progressProducts[evt.index]=makeProgressItem(evt.url||'');
     progressProducts[evt.index].url=evt.url||progressProducts[evt.index].url;
     progressProducts[evt.index].status='running';
+    progressProducts[evt.index].batchStartedAt=Date.now();
     activeProductIndex=evt.index;
+    startElapsedTimer();
     renderProgressTabs();
     renderActiveProductPanel();
     logLine(`商品 ${evt.index+1}/${evt.total_products} 開始: ${evt.url}`);
@@ -958,6 +993,8 @@ function handleEvent(evt){
     if(progressProducts[evt.index]){
       progressProducts[evt.index].steps[evt.step-1]='running';
       progressProducts[evt.index].stepMessages[evt.step]='';
+      progressProducts[evt.index].stepStartedAt[evt.step]=Date.now();
+      if(evt.est) progressProducts[evt.index].stepEst[evt.step]=evt.est;
       if(evt.step===1 && evt.name) progressProducts[evt.index].title=evt.name;
     }
     renderActiveProductPanel();
@@ -990,6 +1027,16 @@ function handleEvent(evt){
     }
     renderActiveProductPanel();
     logLine(`  [${evt.index+1}] 警告: ${evt.message}`);
+  }else if(evt.type==='step_progress'){
+    if(progressProducts[evt.index]){
+      const c=evt.completed, t=evt.total_items;
+      const remSec=Math.ceil(evt.est_remaining_sec||0);
+      const remMin=Math.floor(remSec/60), remS=remSec%60;
+      const remStr=remMin>0?`残り約${remMin}分${remS}秒`:`残り約${remS}秒`;
+      progressProducts[evt.index].stepMessages[evt.step]=`${c}/${t}枚完了 (${remStr})`;
+      progressProducts[evt.index].stepEst[evt.step]=`${c}/${t}枚`;
+    }
+    renderActiveProductPanel();
   }else if(evt.type==='quota_exhausted'){
     if(progressProducts[evt.index]){
       if(evt.step>=1 && evt.step<=7){
@@ -1003,6 +1050,7 @@ function handleEvent(evt){
     logLine(`  [${(evt.index??0)+1}] API残高不足: ${evt.message}`);
     alert(evt.message);
   }else if(evt.type==='batch_stopped'){
+    stopElapsedTimer();
     logLine(`バッチ停止: ${evt.message}`);
     for(let i=(evt.stopped_at_index||0)+1;i<progressProducts.length;i++){
       progressProducts[i].status='skipped';
@@ -1031,6 +1079,7 @@ function handleEvent(evt){
     renderActiveProductPanel();
     logLine(`商品 ${evt.index+1} 完了: ${evt.asin}`);
   }else if(evt.type==='all_done'){
+    stopElapsedTimer();
     reviewProducts=evt.results||reviewProducts;
     activeReviewProductIndex=0;
     renderReview();
@@ -1397,6 +1446,15 @@ function handleRestartEventMain(ev){
     if(row) row.innerHTML=row.innerHTML.replace(/実行中\\.\\.\\./, '<span style="color:#16a34a;font-weight:600">完了</span>');
   }else if(ev.type==='step_warn'){
     list.innerHTML+='<div style="color:#f59e0b;font-size:12px;padding-left:16px">警告: '+(ev.message||'')+'</div>';
+  }else if(ev.type==='step_progress'){
+    const row=document.getElementById('rc-row-'+ev.step);
+    if(row){
+      const c=ev.completed, t=ev.total_items;
+      const remSec=Math.ceil(ev.est_remaining_sec||0);
+      const remMin=Math.floor(remSec/60), remS=remSec%60;
+      const remStr=remMin>0?'残り約'+remMin+'分'+remS+'秒':'残り約'+remS+'秒';
+      row.innerHTML='Step '+ev.step+': 画像テキスト英語化 — <span style="color:#f59e0b;font-weight:600">'+c+'/'+t+'枚完了 ('+remStr+')</span>';
+    }
   }else if(ev.type==='quota_exhausted'){
     list.innerHTML+='<div style="color:#dc2626;font-weight:700;padding:8px;background:#fef2f2;border-radius:6px;margin:4px 0">API残高不足: '+(ev.message||'')+'</div>';
     document.getElementById('rc-btn').disabled=false;
@@ -1788,6 +1846,15 @@ def _restart_card_js(batch_id: str, asin: str) -> str:
         "    if (row) row.innerHTML = row.innerHTML.replace(/実行中\\.\\.\\./, '<span style=\"color:#16a34a;font-weight:600\">完了</span>');\n"
         "  } else if (ev.type === 'step_warn') {\n"
         "    list.innerHTML += '<div style=\"color:#f59e0b;font-size:12px;padding-left:16px\">警告: ' + (ev.message || '') + '</div>';\n"
+        "  } else if (ev.type === 'step_progress') {\n"
+        "    var row = document.getElementById('step-row-' + ev.step);\n"
+        "    if (row) {\n"
+        "      var c = ev.completed, t = ev.total_items;\n"
+        "      var remSec = Math.ceil(ev.est_remaining_sec || 0);\n"
+        "      var remMin = Math.floor(remSec / 60), remS = remSec % 60;\n"
+        "      var remStr = remMin > 0 ? '残り約' + remMin + '分' + remS + '秒' : '残り約' + remS + '秒';\n"
+        "      row.innerHTML = 'Step ' + ev.step + ': 画像テキスト英語化 — <span style=\"color:#f59e0b;font-weight:600\">' + c + '/' + t + '枚完了 (' + remStr + ')</span>';\n"
+        "    }\n"
         "  } else if (ev.type === 'quota_exhausted') {\n"
         "    list.innerHTML += '<div style=\"color:#dc2626;font-weight:700;padding:8px;background:#fef2f2;border-radius:6px;margin:4px 0\">API残高不足: ' + (ev.message || '') + '</div>';\n"
         "    document.getElementById('restart-btn').disabled = false;\n"
@@ -2075,19 +2142,56 @@ async def restart_from_step(request: Request):
                 }
             })
 
-        # --- Step 4: 画像テキスト英語化 ---
+        # --- Step 4: 画像テキスト英語化（1枚ずつ進捗報告） ---
         if from_step <= 4:
             if openai_key:
-                est = f"約{len(image_paths) * 45}秒（{len(image_paths)}枚）"
+                total_images = len(image_paths)
+                est_per_image = 45
+                est = f"約{total_images * est_per_image}秒（{total_images}枚）"
                 yield emit({"type": "step", "index": 0, "step": 4, "total": total, "name": "画像テキスト英語化", "est": est})
-                try:
-                    translated_image_paths = translate_images(openai_key, image_paths, output_dir, product)
-                    translated_image_paths = [str(p) for p in translated_image_paths]
-                except QuotaExhaustedError as e:
-                    yield emit({"type": "quota_exhausted", "index": 0, "step": 4, "service": e.service, "message": str(e)})
-                    return
-                except Exception as e:
-                    yield emit({"type": "step_warn", "index": 0, "step": 4, "message": f"一部失敗: {e}"})
+
+                en_dir = output_dir / "images_en"
+                en_dir.mkdir(exist_ok=True)
+                translated_image_paths = []
+                consecutive_failures = 0
+                max_consecutive_failures = 2
+                step4_start = time.time()
+
+                for img_i, img_path in enumerate(image_paths):
+                    out_path = en_dir / f"{Path(img_path).stem}_en.png"
+                    try:
+                        success = translate_image_text(openai_key, str(img_path), str(out_path), product)
+                    except QuotaExhaustedError as e:
+                        yield emit({"type": "quota_exhausted", "index": 0, "step": 4, "service": e.service, "message": str(e)})
+                        return
+                    except Exception as e:
+                        logger.warning("画像翻訳エラー (%s): %s", img_path, e)
+                        success = False
+
+                    if success:
+                        translated_image_paths.append(str(out_path))
+                        consecutive_failures = 0
+                    else:
+                        consecutive_failures += 1
+                        if consecutive_failures >= max_consecutive_failures:
+                            logger.warning("画像翻訳が%d回連続失敗。残り%d枚をスキップ", max_consecutive_failures, total_images - img_i - 1)
+                            yield emit({"type": "step_warn", "index": 0, "step": 4, "message": f"画像翻訳が{max_consecutive_failures}回連続失敗。残り{total_images - img_i - 1}枚をスキップしました。"})
+                            break
+
+                    elapsed = time.time() - step4_start
+                    completed = img_i + 1
+                    if len(translated_image_paths) > 0:
+                        avg_per_image = elapsed / completed
+                        est_remaining = avg_per_image * (total_images - completed)
+                    else:
+                        est_remaining = est_per_image * (total_images - completed)
+                    yield emit({
+                        "type": "step_progress", "index": 0, "step": 4,
+                        "completed": completed, "total_items": total_images,
+                        "elapsed_sec": round(elapsed, 1),
+                        "est_remaining_sec": round(max(0, est_remaining), 1),
+                    })
+
                 translated_image_urls = [f"/files/{asin}/images_en/{Path(p).name}" for p in translated_image_paths]
                 yield emit({
                     "type": "step_done", "index": 0, "step": 4,
@@ -2428,24 +2532,61 @@ async def process_stream(request: Request):
                 }
             })
 
-            # Step 4: 画像テキスト英語化 + 即座にDrive保存
+            # Step 4: 画像テキスト英語化 + 即座にDrive保存（1枚ずつ進捗報告）
             translated_image_paths = []
             if openai_key and not skip_image_translate:
-                est = f"約{len(image_paths) * 45}秒（{len(image_paths)}枚）"
+                total_images = len(image_paths)
+                est_per_image = 45  # 秒/枚
+                est = f"約{total_images * est_per_image}秒（{total_images}枚）"
                 yield emit({"type": "step", "index": idx, "step": 4, "total": total, "name": "画像テキスト英語化", "est": est})
-                try:
-                    translated_image_paths = translate_images(openai_key, image_paths, output_dir, product)
-                except QuotaExhaustedError as e:
-                    yield emit({"type": "quota_exhausted", "index": idx, "step": 4, "service": e.service, "message": str(e)})
-                    remaining = len(urls) - idx - 1
-                    if remaining > 0:
-                        yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
-                    BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
-                    BATCH_STORE[batch_id]["stopped_at_index"] = idx
-                    save_batch_state(batch_id)
-                    return
-                except Exception as e:
-                    yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"一部失敗: {e}"})
+
+                en_dir = output_dir / "images_en"
+                en_dir.mkdir(exist_ok=True)
+                consecutive_failures = 0
+                max_consecutive_failures = 2
+                step4_start = time.time()
+
+                for img_i, img_path in enumerate(image_paths):
+                    out_path = en_dir / f"{img_path.stem}_en.png"
+                    try:
+                        success = translate_image_text(openai_key, str(img_path), str(out_path), product)
+                    except QuotaExhaustedError as e:
+                        yield emit({"type": "quota_exhausted", "index": idx, "step": 4, "service": e.service, "message": str(e)})
+                        remaining = len(urls) - idx - 1
+                        if remaining > 0:
+                            yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
+                        BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
+                        BATCH_STORE[batch_id]["stopped_at_index"] = idx
+                        save_batch_state(batch_id)
+                        return
+                    except Exception as e:
+                        logger.warning("画像翻訳エラー (%s): %s", img_path, e)
+                        success = False
+
+                    if success:
+                        translated_image_paths.append(out_path)
+                        consecutive_failures = 0
+                    else:
+                        consecutive_failures += 1
+                        if consecutive_failures >= max_consecutive_failures:
+                            logger.warning("画像翻訳が%d回連続失敗。残り%d枚をスキップ", max_consecutive_failures, total_images - img_i - 1)
+                            yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"画像翻訳が{max_consecutive_failures}回連続失敗。残り{total_images - img_i - 1}枚をスキップしました。"})
+                            break
+
+                    # 1枚完了ごとに進捗報告
+                    elapsed = time.time() - step4_start
+                    completed = img_i + 1
+                    if len(translated_image_paths) > 0:
+                        avg_per_image = elapsed / completed
+                        est_remaining = avg_per_image * (total_images - completed)
+                    else:
+                        est_remaining = est_per_image * (total_images - completed)
+                    yield emit({
+                        "type": "step_progress", "index": idx, "step": 4,
+                        "completed": completed, "total_items": total_images,
+                        "elapsed_sec": round(elapsed, 1),
+                        "est_remaining_sec": round(max(0, est_remaining), 1),
+                    })
 
                 # 翻訳画像を即座にDriveへ保存
                 if drive_obj and folder_id and translated_image_paths:
