@@ -2868,15 +2868,12 @@ async def process_stream(request: Request):
 
             # Step 7: スプレッドシート書き込み
             yield emit({"type": "step", "index": idx, "step": 7, "total": total, "name": "スプレッドシート書き込み", "est": "2秒"})
-            if auto_finalize:
-                try:
-                    write_to_spreadsheet(url, product, len(image_paths), folder_url, config)
-                    yield emit({"type": "step_done", "index": idx, "step": 7, "data": {"finalized": True}})
-                except Exception as e:
-                    yield emit({"type": "step_warn", "index": idx, "step": 7, "message": f"スプレッドシートエラー: {e}"})
-                    yield emit({"type": "step_done", "index": idx, "step": 7, "data": {"finalized": False}})
-            else:
-                yield emit({"type": "step_skip", "index": idx, "step": 7, "name": "スプレッドシート書き込み", "reason": "レビュー後に確定"})
+            try:
+                write_to_spreadsheet(url, product, len(image_paths), folder_url, config)
+                yield emit({"type": "step_done", "index": idx, "step": 7, "data": {"finalized": auto_finalize}})
+            except Exception as e:
+                yield emit({"type": "step_warn", "index": idx, "step": 7, "message": f"スプレッドシートエラー: {e}"})
+                yield emit({"type": "step_done", "index": idx, "step": 7, "data": {"finalized": False}})
 
             product_state = {
                 "url": url,
@@ -3224,15 +3221,12 @@ async def resume_batch(batch_id: str):
 
             # Step 7: スプレッドシート書き込み
             yield emit({"type": "step", "index": idx, "step": 7, "total": total, "name": "スプレッドシート書き込み", "est": "2秒"})
-            if auto_finalize:
-                try:
-                    write_to_spreadsheet(url, product, len(image_paths), folder_url, config)
-                    yield emit({"type": "step_done", "index": idx, "step": 7, "data": {"finalized": True}})
-                except Exception as e:
-                    yield emit({"type": "step_warn", "index": idx, "step": 7, "message": f"スプレッドシートエラー: {e}"})
-                    yield emit({"type": "step_done", "index": idx, "step": 7, "data": {"finalized": False}})
-            else:
-                yield emit({"type": "step_skip", "index": idx, "step": 7, "name": "スプレッドシート書き込み", "reason": "レビュー後に確定"})
+            try:
+                write_to_spreadsheet(url, product, len(image_paths), folder_url, config)
+                yield emit({"type": "step_done", "index": idx, "step": 7, "data": {"finalized": auto_finalize}})
+            except Exception as e:
+                yield emit({"type": "step_warn", "index": idx, "step": 7, "message": f"スプレッドシートエラー: {e}"})
+                yield emit({"type": "step_done", "index": idx, "step": 7, "data": {"finalized": False}})
 
             product_state = {
                 "url": url, "asin": asin,
