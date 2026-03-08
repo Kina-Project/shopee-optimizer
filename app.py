@@ -2203,11 +2203,14 @@ async def serve_file(asin: str, path: str):
                 continue
             sub = _find_existing_folder(drive, current_folder_id, folder_name)
             if not sub:
-                raise HTTPException(status_code=404, detail="File not found")
+                # サブフォルダが無い場合、ASINフォルダ直下も検索（動画等）
+                break
             current_folder_id = sub["id"]
 
-        # ファイルを検索
+        # ファイルを検索（サブフォルダ内 → ASINフォルダ直下の順）
         found = _find_existing_file(drive, current_folder_id, file_name)
+        if not found and current_folder_id != drive_folder_id:
+            found = _find_existing_file(drive, drive_folder_id, file_name)
         if not found:
             raise HTTPException(status_code=404, detail="File not found")
 
@@ -2668,7 +2671,7 @@ async def process_stream(request: Request):
                     "prompt_extra": "",
                     "created_at": now_iso(),
                     "video_path": str(video_path) if video_path else "",
-                    "video_url": to_rel_video_url(asin, video_path) if video_path else "",
+                    "video_url": to_rel_video_url(asin, video_path) if video_path else f"/files/{asin}/videos/{version}.mp4",
                     "drive_file_url": "",
                     "source_image_path": str(image_paths[0]) if image_paths else "",
                     "source_image_url": image_urls[0] if image_urls else "",
@@ -3182,7 +3185,7 @@ async def resume_batch(batch_id: str):
                     "version": version, "effect": effect, "model": model,
                     "memo": "既存動画を再利用", "prompt_extra": "", "created_at": now_iso(),
                     "video_path": str(video_path) if video_path else "",
-                    "video_url": f"/files/{asin}/videos/{video_path.name}" if video_path else "",
+                    "video_url": f"/files/{asin}/videos/{video_path.name}" if video_path else f"/files/{asin}/videos/{version}.mp4",
                 }
                 skip_count = len(existing_video_files) if existing_video_files else 1
                 yield emit({"type": "step_skip", "index": idx, "step": 5, "name": "動画生成", "reason": f"既存の動画を使用（{skip_count}本）。再生成はレビュー画面から行えます"})
