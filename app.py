@@ -2625,9 +2625,9 @@ async def resume_batch(batch_id: str):
     def generate():
         config = get_config()
         output_base = config["output_base"]
-        openai_key = config.get("openai_key", "")
-        rainforest_key = config.get("rainforest_key", "")
-        skip_image_translate = config.get("skip_image_translate", False)
+        openai_key = batch.get("openai_key", "") or os.environ.get("OPENAI_API_KEY", "")
+        rainforest_key = batch.get("rainforest_key", "") or os.environ.get("RAINFOREST_API_KEY", "")
+        skip_image_translate = batch.get("skip_image_translate", False)
         started = datetime.now()
         est_total = len(remaining_urls) * EST_PER_PRODUCT_SEC
         results = list(existing_results)
