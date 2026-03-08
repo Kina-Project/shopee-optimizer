@@ -58,6 +58,14 @@ EST_PER_PRODUCT_SEC = 165
 BATCH_STORE = {}
 BATCH_PAUSE_REQUESTS: dict[str, bool] = {}
 
+EFFECT_LABELS = {
+    "zoom": "ズーム",
+    "unbox": "開封",
+    "steam": "湯気",
+    "condensation": "結露",
+    "pickup": "持ち上げ",
+}
+
 STEP_NAMES = {
     1: "Amazon商品情報を取得",
     2: "画像ダウンロード",
@@ -1380,11 +1388,11 @@ function renderReview(){
           <div class="control-row">
             <span class="control-label">演出</span>
             <select id="effect_${p.asin}">
-              <option value="zoom">zoom</option>
-              <option value="unbox">unbox</option>
-              <option value="steam">steam</option>
-              <option value="condensation">condensation</option>
-              <option value="pickup">pickup</option>
+              <option value="zoom">ズーム</option>
+              <option value="unbox">開封</option>
+              <option value="steam">湯気</option>
+              <option value="condensation">結露</option>
+              <option value="pickup">持ち上げ</option>
             </select>
             <input id="memo_${p.asin}" type="text" placeholder="再生成メモ" style="min-width:160px;flex:1" />
           </div>
@@ -1397,7 +1405,7 @@ function renderReview(){
           <div class="control-row">
             <span class="control-label">確定</span>
             <select id="version_${p.asin}" onchange="selectVersion('${p.asin}', this.value)">
-              ${(p.videos||[]).map(x=>`<option value="${x.version}" ${x.version===selected?'selected':''}>${x.version} (${x.effect})</option>`).join('')}
+              ${(p.videos||[]).map(x=>`<option value="${x.version}" ${x.version===selected?'selected':''}>${x.version}（${({zoom:'ズーム',unbox:'開封',steam:'湯気',condensation:'結露',pickup:'持ち上げ'})[x.effect]||x.effect}）</option>`).join('')}
             </select>
           </div>
           <div class="control-row">
@@ -1416,7 +1424,7 @@ function renderReview(){
           <option value="" disabled selected>読み込み中...</option>
         </select>
         <select id="rc-effect" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;background:#fff">
-          <option value="zoom">zoom</option><option value="unbox">unbox</option><option value="steam">steam</option><option value="condensation">condensation</option><option value="pickup">pickup</option>
+          <option value="zoom">ズーム</option><option value="unbox">開封</option><option value="steam">湯気</option><option value="condensation">結露</option><option value="pickup">持ち上げ</option>
         </select>
         <button id="rc-btn" onclick="startRestartFromMain()" disabled
           style="padding:6px 16px;background:var(--c-brand);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">
@@ -1959,14 +1967,14 @@ a{{color:#ee4d2d;text-decoration:none;transition:color .2s}} a:hover{{color:#d43
     <div id="video-player-area" style="margin-bottom:16px">
       {f'<video id="main-video" src="{html.escape(latest_video_url)}" controls style="max-width:480px;width:100%;border-radius:12px;background:#000"></video>' if latest_video_url else '<div style="font-size:13px;color:#9298a8">動画なし</div>'}
     </div>
-    {'<div style="margin-top:16px;padding:16px;background:#f6f7fb;border-radius:12px"><div style="font-weight:600;font-size:13px;margin-bottom:10px">動画を再生成</div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><select id="regen-effect" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;background:#fff"><option value="zoom">zoom</option><option value="unbox">unbox</option><option value="steam">steam</option><option value="condensation">condensation</option><option value="pickup">pickup</option></select><input id="regen-memo" type="text" placeholder="メモ" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;min-width:120px"/><input id="regen-prompt" type="text" placeholder="追加指示（例: 商品を正面から）" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;flex:1;min-width:180px"/><button id="regen-btn" onclick="regenerateVideo()" style="padding:6px 16px;background:#ee4d2d;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap">再生成</button></div><div id="regen-status" style="display:none;margin-top:8px;font-size:12px;color:#5f6577"></div></div>' if found_batch_id else '<div style="margin-top:12px;font-size:12px;color:#9298a8">※ バッチデータが見つからないため再生成は利用できません。メインページから再処理してください。</div>'}
+    {'<div style="margin-top:16px;padding:16px;background:#f6f7fb;border-radius:12px"><div style="font-weight:600;font-size:13px;margin-bottom:10px">動画を再生成</div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><select id="regen-effect" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;background:#fff"><option value="zoom">ズーム</option><option value="unbox">開封</option><option value="steam">湯気</option><option value="condensation">結露</option><option value="pickup">持ち上げ</option></select><input id="regen-memo" type="text" placeholder="メモ" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;min-width:120px"/><input id="regen-prompt" type="text" placeholder="追加指示（例: 商品を正面から）" style="padding:6px 10px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;flex:1;min-width:180px"/><button id="regen-btn" onclick="regenerateVideo()" style="padding:6px 16px;background:#ee4d2d;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap">再生成</button></div><div id="regen-status" style="display:none;margin-top:8px;font-size:12px;color:#5f6577"></div></div>' if found_batch_id else '<div style="margin-top:12px;font-size:12px;color:#9298a8">※ バッチデータが見つからないため再生成は利用できません。メインページから再処理してください。</div>'}
   </div>
   <div class="card">
     <h2>動画生成履歴</h2>
     <div style="font-size:12px;color:#9298a8;margin-bottom:10px">{'※ 動画生成シート未作成のため商品データシート履歴を表示中' if from_product_sheet else ''}</div>
     <div style="overflow-x:auto">
     <table>
-      <thead><tr><th>日時</th><th>Version</th><th>Effect</th><th>Model</th><th>Memo</th><th>再生</th><th>確定</th></tr></thead>
+      <thead><tr><th>日時</th><th>バージョン</th><th>演出</th><th>モデル</th><th>メモ</th><th>再生</th><th>確定</th></tr></thead>
       <tbody>{''.join(entries_html)}</tbody>
     </table>
     </div>
@@ -2175,11 +2183,11 @@ RESTART_CARD_HTML = """<div class="card" id="restart-card">
         <option value="" disabled selected>読み込み中...</option>
       </select>
       <select id="restart-effect" style="padding:8px 12px;border:1px solid #e2e5ed;border-radius:8px;font-size:13px;font-family:inherit;background:#fff">
-        <option value="zoom">zoom</option>
-        <option value="unbox">unbox</option>
-        <option value="steam">steam</option>
-        <option value="condensation">condensation</option>
-        <option value="pickup">pickup</option>
+        <option value="zoom">ズーム</option>
+        <option value="unbox">開封</option>
+        <option value="steam">湯気</option>
+        <option value="condensation">結露</option>
+        <option value="pickup">持ち上げ</option>
       </select>
       <button id="restart-btn" onclick="startRestart()" disabled
         style="padding:8px 20px;background:#ee4d2d;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:background .2s;font-family:inherit">
@@ -2230,7 +2238,7 @@ async def history_detail_page(batch_id: str, asin: str):
         videos_html.append(
             "<div style='padding:14px;border:1px solid #e8ebf0;border-radius:12px;margin-bottom:12px;transition:border-color .2s'>"
             f"<div style='font-size:11px;color:#9298a8;font-family:DM Sans,sans-serif'>{html.escape(v.get('created_at',''))}</div>"
-            f"<div style='font-weight:700;font-family:DM Sans,Noto Sans JP,sans-serif;margin:4px 0 6px'>{html.escape(v.get('version',''))} / {html.escape(v.get('effect',''))} / {html.escape(v.get('model',''))}</div>"
+            f"<div style='font-weight:700;font-family:DM Sans,Noto Sans JP,sans-serif;margin:4px 0 6px'>{html.escape(v.get('version',''))} / {html.escape(EFFECT_LABELS.get(v.get('effect',''), v.get('effect','')))} / {html.escape(v.get('model',''))}</div>"
             f"<div style='font-size:12px;color:#5f6577;margin-bottom:8px'>{html.escape(v.get('memo',''))}</div>"
             f"{video_block}"
             "</div>"
