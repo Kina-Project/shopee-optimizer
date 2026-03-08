@@ -1405,11 +1405,14 @@ function renderReview(){
           </div>
           <div id="regenStatus_${p.asin}" style="display:none;padding:8px 12px;margin-bottom:8px;border-radius:8px;font-size:13px;font-weight:600"></div>
           ${imageGridHtml}
-          <div class="control-row">
-            <span class="control-label">確定</span>
-            <select id="version_${p.asin}" onchange="selectVersion('${p.asin}', this.value)">
-              ${(p.videos||[]).map(x=>`<option value="${x.version}" ${x.version===selected?'selected':''}>${x.version}（${({zoom:'ズーム',unbox:'開封',steam:'湯気',condensation:'結露',pickup:'持ち上げ'})[x.effect]||x.effect}）</option>`).join('')}
-            </select>
+          <div class="control-row" style="align-items:flex-start">
+            <span class="control-label">使用動画</span>
+            <div style="flex:1">
+              <select id="version_${p.asin}" onchange="selectVersion('${p.asin}', this.value)">
+                ${(p.videos||[]).map(x=>`<option value="${x.version}" ${x.version===selected?'selected':''}>${x.version}（${({zoom:'ズーム',unbox:'開封',steam:'湯気',condensation:'結露',pickup:'持ち上げ'})[x.effect]||x.effect}）</option>`).join('')}
+              </select>
+              <div class="small" style="margin-top:4px">再生成で複数の動画がある場合、Shopeeに使う動画をここで選択します</div>
+            </div>
           </div>
           <div class="control-row">
             <span class="control-label">Drive</span>
