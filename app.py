@@ -294,6 +294,30 @@ def get_batch_or_none(batch_id: str):
     return None
 
 
+def _merge_local_videos(product_state: dict, videos_dir: Path):
+    """ファイルシステム上の動画をvideos配列にマージ（既知バージョンはスキップ）"""
+    if not videos_dir.exists():
+        return
+    known = {v.get("version") for v in product_state.get("videos", [])}
+    asin = product_state.get("asin", "")
+    for vp in sorted(videos_dir.glob("*.mp4")):
+        ver = vp.stem
+        if ver not in known:
+            product_state.setdefault("videos", []).append({
+                "version": ver,
+                "effect": "",
+                "model": "",
+                "memo": "",
+                "prompt_extra": "",
+                "created_at": "",
+                "video_path": str(vp),
+                "video_url": f"/files/{asin}/videos/{vp.name}",
+                "drive_file_url": "",
+            })
+    if not product_state.get("selected_version") and product_state.get("videos"):
+        product_state["selected_version"] = product_state["videos"][0]["version"]
+
+
 def load_batch_store():
     BATCH_STORE.clear()
     if not BATCH_STATE_DIR.exists():
@@ -2580,6 +2604,8 @@ async def process_stream(request: Request):
                 "finalized_at": now_iso() if auto_finalize else "",
                 "created_at": now_iso(),
             }
+            # ファイルシステム上の既存動画をvideos配列にマージ
+            _merge_local_videos(product_state, output_dir / "videos")
             results.append(product_state)
             save_batch_state(batch_id)
 
@@ -3011,6 +3037,7 @@ async def resume_batch(batch_id: str):
                 "finalized_at": now_iso() if auto_finalize else "",
                 "created_at": now_iso(),
             }
+            _merge_local_videos(product_state, output_dir / "videos")
             results.append(product_state)
             save_batch_state(batch_id)
             yield emit({"type": "product_done", "index": idx, "asin": asin, "data": product_state})
@@ -3309,6 +3336,19 @@ async def api_add_images(request: Request):
             product["selected_image_url"] = product["image_urls"][0]
         total_count = product["image_count"]
         save_batch_state(batch_id)
+
+    # 追加画像をDriveにもアップロード
+    folder_id = (product or {}).get("drive_folder_id", "")
+    if folder_id and new_paths:
+        try:
+            drive_cfg = get_config()
+            from shopee_core import _get_drive_service, upload_images_to_drive
+            drive_svc = _get_drive_service(drive_cfg)
+            if drive_svc:
+                upload_images_to_drive(drive_svc, [Path(p) for p in new_paths], folder_id)
+                logger.info("add-images: %d枚をDriveにアップロード完了", len(new_paths))
+        except Exception as e:
+            logger.warning("add-images: Driveアップロード失敗: %s", e)
 
     return JSONResponse({
         "ok": True,
