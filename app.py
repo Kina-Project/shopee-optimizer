@@ -1647,7 +1647,9 @@ async function finalizeBatch(){
   });
   const data=await res.json();
   if(!res.ok){alert(data.detail||'確定処理に失敗しました');return}
-  document.getElementById('finalizeMsg').textContent=`${data.finalized_count}件を確定しました`;
+  let msg=`${data.finalized_count}件を確定しました`;
+  if(data.fallback){msg+='\n（バッチデータを復元して処理しました）'}
+  document.getElementById('finalizeMsg').textContent=msg;
   reviewProducts=data.products || reviewProducts;
   renderReview();
 }
@@ -3491,7 +3493,19 @@ async def finalize(request: Request):
     batch_id = data.get("batch_id", "")
     selections = data.get("products", [])
 
+    # products配列サイズ制限（DoS防止）
+    MAX_SELECTIONS = 100
+    if len(selections) > MAX_SELECTIONS:
+        raise HTTPException(status_code=400, detail=f"一度に確定できるのは{MAX_SELECTIONS}件までです")
+
+    # クライアントデータのURL検証
+    for s in selections:
+        url = s.get("url", "")
+        if url and not url.startswith("https://"):
+            raise HTTPException(status_code=400, detail="urlはhttps://で始まる必要があります")
+
     batch = get_batch_or_none(batch_id)
+    used_fallback = False
 
     # バッチが見つからない場合、クライアントから送られたデータで処理
     if batch:
@@ -3501,9 +3515,9 @@ async def finalize(request: Request):
         if not selections:
             raise HTTPException(status_code=400, detail="確定するデータがありません")
         for s in selections:
-            if not isinstance(s.get("asin"), str) or not s.get("asin"):
-                raise HTTPException(status_code=400, detail="不正なproductデータです")
+            validate_asin(s.get("asin", ""))
         results = selections
+        used_fallback = True
 
     selection_map = {p.get("asin"): p.get("selected_version") for p in selections if p.get("asin")}
 
@@ -3559,12 +3573,16 @@ async def finalize(request: Request):
         batch["updated_at"] = now_iso()
         save_batch_state(batch_id)
 
-    return JSONResponse({
+    response_data = {
         "ok": True,
         "batch_id": batch_id,
         "finalized_count": finalized_count,
         "products": results,
-    })
+    }
+    if used_fallback:
+        response_data["fallback"] = True
+
+    return JSONResponse(response_data)
 
 
 @app.post("/search-images")
