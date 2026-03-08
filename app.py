@@ -1401,8 +1401,9 @@ function renderReview(){
           <div class="control-row">
             <span class="control-label">追加指示</span>
             <input id="prompt_${p.asin}" type="text" placeholder="例: 商品ロゴを正面で見せる" style="min-width:220px;flex:1" />
-            <button class="btn btn-sm" onclick="regenerate('${p.asin}')">再生成</button>
+            <button class="btn btn-sm" id="regenBtn_${p.asin}" onclick="regenerate('${p.asin}')">再生成</button>
           </div>
+          <div id="regenStatus_${p.asin}" style="display:none;padding:8px 12px;margin-bottom:8px;border-radius:8px;font-size:13px;font-weight:600"></div>
           ${imageGridHtml}
           <div class="control-row">
             <span class="control-label">確定</span>
@@ -1459,24 +1460,55 @@ function selectVersion(asin, version){
 }
 
 async function regenerate(asin){
+  const btn=document.getElementById(`regenBtn_${asin}`);
+  const statusEl=document.getElementById(`regenStatus_${asin}`);
   const effect=document.getElementById(`effect_${asin}`).value;
   const memo=document.getElementById(`memo_${asin}`).value;
   const promptExtra=(document.getElementById(`prompt_${asin}`)?.value||'').trim();
   const p=reviewProducts.find(x=>x.asin===asin);
   const selectedImageUrl=p?.selected_image_url || '';
-  const res=await fetch('/regenerate-video',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({batch_id:currentBatchId, asin, effect, memo, selected_image_url:selectedImageUrl, prompt_extra:promptExtra})
-  });
-  const data=await res.json();
-  if(!res.ok){alert(data.detail||'再生成に失敗しました');return}
-  if(!p)return;
-  p.videos=data.videos;
-  p.selected_version=data.selected_version;
-  p.selected_image_url=data.selected_image_url || p.selected_image_url;
-  logLine(`[${asin}] 再生成完了: ${data.selected_version}`);
-  renderReview();
+
+  btn.disabled=true;
+  btn.textContent='生成中...';
+  statusEl.style.display='block';
+  statusEl.style.background='#fef3c7';
+  statusEl.style.color='#92400e';
+  statusEl.textContent='動画を再生成中です（30〜120秒かかります）...';
+  let sec=0;
+  const timer=setInterval(()=>{sec++;statusEl.textContent=`動画を再生成中です（${sec}秒経過）...`;},1000);
+
+  try{
+    const res=await fetch('/regenerate-video',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({batch_id:currentBatchId, asin, effect, memo, selected_image_url:selectedImageUrl, prompt_extra:promptExtra})
+    });
+    clearInterval(timer);
+    const data=await res.json();
+    if(!res.ok){
+      statusEl.style.background='#fef2f2';
+      statusEl.style.color='#dc2626';
+      statusEl.textContent='エラー: '+(data.detail||'再生成に失敗しました');
+      return;
+    }
+    if(!p)return;
+    p.videos=data.videos;
+    p.selected_version=data.selected_version;
+    p.selected_image_url=data.selected_image_url || p.selected_image_url;
+    statusEl.style.background='#f0fdf4';
+    statusEl.style.color='#16a34a';
+    statusEl.textContent=`再生成完了: ${data.selected_version}`;
+    logLine(`[${asin}] 再生成完了: ${data.selected_version}`);
+    renderReview();
+  }catch(e){
+    clearInterval(timer);
+    statusEl.style.background='#fef2f2';
+    statusEl.style.color='#dc2626';
+    statusEl.textContent='通信エラー: '+e.message;
+  }finally{
+    btn.disabled=false;
+    btn.textContent='再生成';
+  }
 }
 
 function showImageSearch(asin){
