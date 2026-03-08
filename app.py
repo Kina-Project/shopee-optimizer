@@ -1327,10 +1327,12 @@ function renderReview(){
   const selectedImage=p.selected_image_url || v?.source_image_url || imageUrls[0] || '';
   p.selected_image_url=selectedImage;
 
-  const shortageHtml = p.image_shortage ? `
+  if(p.image_shortage) p._search_shown=true;
+  const showSearch = p._search_shown || p.image_shortage;
+  const shortageHtml = showSearch ? `
     <div class="image-shortage-warn">
-      <span>画像が${p.image_count||0}枚のみ（3枚未満）</span>
-      <button class="btn btn-sm" onclick="showImageSearch('${p.asin}')">画像を検索して補完</button>
+      <span>画像 ${p.image_count||0}枚${p.image_shortage ? '（3枚未満）' : ''}</span>
+      <button class="btn btn-sm" onclick="showImageSearch('${p.asin}')">画像を検索して追加</button>
     </div>
     <div id="imgSearch_${p.asin}" class="hidden" style="padding:12px;background:var(--c-bg);border-radius:var(--radius);margin-bottom:10px">
       <div style="display:flex;gap:8px;margin-bottom:10px">
