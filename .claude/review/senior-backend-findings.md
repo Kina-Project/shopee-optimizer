@@ -1,7 +1,8 @@
 # Senior Backend Engineer レビュー結果
 
-対象: `app.py`（3,866行）、`shopee_core.py`（1,488行）
+対象PR: #19 〜 #22
 レビュー日: 2026-03-08
+対象ファイル: `app.py`、`shopee_core.py`
 
 ---
 
@@ -9,21 +10,16 @@
 
 | # | 課題 | カテゴリ | 重要度(1-10) | 影響範囲(1-10) | 優先度スコア |
 |---|------|----------|------------|--------------|------------|
-| 1 | BATCH_STOREのインメモリ管理（マルチインスタンス非対応） | スケーラビリティ | 9 | 9 | 81 |
-| 2 | process_stream / resume_batch の処理ロジック完全重複 | 保守性 | 8 | 8 | 64 |
-| 3 | Syncジェネレータ内でブロッキングI/O（外部API呼び出し） | パフォーマンス | 9 | 7 | 63 |
-| 4 | gspreadの認証・接続を毎回生成（コネクション再利用なし） | パフォーマンス | 7 | 8 | 56 |
-| 5 | APIキーをリクエストボディで受け取る設計 | セキュリティ | 8 | 6 | 48 |
-| 6 | /restart-from-stepがstep 4の画像翻訳ロジックを再度コピペ | 保守性 | 7 | 6 | 42 |
-| 7 | /drive-video プロキシが動画全体をメモリに展開 | パフォーマンス | 7 | 5 | 35 |
-| 8 | エンドポイント命名がRESTful原則に従っていない | API設計 | 5 | 7 | 35 |
-| 9 | スプレッドシートのASIN検索がO(N)の線形スキャン | パフォーマンス | 6 | 5 | 30 |
-| 10 | エラー時の内部例外メッセージがそのままユーザーに露出 | エラーハンドリング | 6 | 5 | 30 |
-| 11 | APIバージョニング戦略がない | API設計 | 4 | 7 | 28 |
-| 12 | get_configが毎回環境変数を読み直す（キャッシュなし） | パフォーマンス | 4 | 6 | 24 |
-| 13 | レート制限が未実装 | スケーラビリティ | 6 | 4 | 24 |
-| 14 | 画像ダウンロード失敗時のリトライなし | 信頼性 | 5 | 4 | 20 |
-| 15 | download_imagesが拡張子をURLの文字列マッチで判定 | 保守性 | 3 | 4 | 12 |
+| 1 | `version` 変数の未定義参照（既存動画スキップパス） | バグ | 9 | 7 | **63** |
+| 2 | `/regenerate-video` のASIN入力バリデーション欠如 | セキュリティ | 8 | 6 | **48** |
+| 3 | `resume_batch` のAPIキー未保存（バッチJSONに含まれない） | 仕様リスク | 7 | 6 | **42** |
+| 4 | ファイルシステム復元時の画像フィルタ欠如（非画像ファイル混入） | バグ | 7 | 5 | **35** |
+| 5 | `BATCH_STORE` のインメモリ管理（マルチインスタンス非対応） | スケーラビリティ | 9 | 9 | **81** |
+| 6 | `/drive-video` プロキシが動画全体をメモリに展開 | パフォーマンス | 6 | 5 | **30** |
+| 7 | `/add-images` のASINバリデーション欠如 + SSRF リスク | セキュリティ | 6 | 4 | **24** |
+| 8 | `_search_duckduckgo_images` の `ImportError` が無限リトライ | バグ | 5 | 3 | **15** |
+| 9 | `process_stream` と `resume_batch` の処理ロジック重複 | 保守性 | 8 | 8 | **64** |
+| 10 | ffmpeg `subprocess.run` の戻り値チェックなし | 信頼性 | 5 | 4 | **20** |
 
 ---
 
@@ -31,232 +27,300 @@
 
 | 軸 | スコア | 根拠 |
 |---|-------|------|
-| 機能性（25点満点） | 19 | 7ステップのパイプラインは完動している。一時停止・再開・ステップ再実行など要件対応は充実。ただしCloud Runのマルチインスタンス構成では動作しない根本的欠陥がある |
-| 保守性（20点満点） | 9 | process_stream / resume_batch / restart-from-stepの3箇所にStep4（画像翻訳ループ）が完全コピペされており、バグ修正が3箇所同期必須。app.pyが3,866行の単一ファイル |
-| パフォーマンス（15点満点） | 8 | syncジェネレータ内でブロッキングAPI呼び出し（Rainforest/OpenAI/fal.ai各30〜120秒）。Cloud RunのCPU配分がストリーミング中に抑制されるリスクがある。gspreadの認証を7ステップ毎に再実行 |
-
-**合計: 36 / 60点**
+| 機能性（25点満点）| 20 | batch消失時フォールバック・画像検索・再生成の各機能は設計通り動作する。課題#1のNameErrorバグは2回目以降の処理でのみ発現するため、初回処理では影響なし。PR#19の-700行削除により全体的なコードの見通しが改善された |
+| 保守性（20点満点）| 11 | `process_stream` と `resume_batch` の700行超の処理が重複しており、バグ#1が両方に同じ形で存在することがその証拠。app.pyが3,300行超の単一ファイルで、HTMLが2/3を占める。PR#19で大幅削除されたことは評価できる |
+| パフォーマンス（15点満点）| 9 | `drive_video_proxy` のメモリ全展開が問題。sync ジェネレータ内でブロッキングAPI呼び出し（120秒超）があり Cloud Run スレッドプールを長時間占有する |
 
 ---
 
 ## 改善提案トップ3
 
----
-
-### 提案1: BATCH_STOREをRedisまたはCloud Firestoreに移行する
+### 提案1: `version` 変数の未定義バグを即修正
 
 **問題:**
-
-`app.py` L58 の `BATCH_STORE = {}` はプロセスローカルのインメモリDictionary。Cloud Runはトラフィック増加時に複数インスタンスを起動するため、インスタンスAで作成したバッチをインスタンスBに問い合わせると404になる。現在はJSONファイルへのフォールバック（L313〜L326）で部分的に対応しているが、Cloud RunのコンテナはリクエストごとにCPUが割り当てられるため、ファイルシステムも共有されない（Cloud Storageマウントなしの場合）。
-
-**解決策（最小コスト: Firestore版）:**
+`process_stream`（Step5スキップパス、行 2388〜2404）と `resume_batch`（行 2880〜2889）の両方で、既存動画が見つかった場合に `version` 変数が設定されないまま終了する。その後 `product_state` の構築時に `"selected_version": version if video_record else ""` で参照するため `NameError` が発生する。
 
 ```python
-# batch_store.py（新規ファイル）
-from google.cloud import firestore
+# 現状（バグあり）: else ブランチでしか version が定義されない
+if existing_video_files:
+    video_path = existing_video_files[-1]
+    # version が設定されない
+    video_record = {"version": video_path.stem, ...}
+    yield emit({"type": "step_skip", ...})
+else:
+    version = "v1"  # ← else ブランチのみ
+    ...
 
-_db = None
-
-def _get_db():
-    global _db
-    if _db is None:
-        _db = firestore.Client()
-    return _db
-
-def save_batch(batch_id: str, batch: dict) -> None:
-    _get_db().collection("batches").document(batch_id).set(batch)
-
-def get_batch(batch_id: str) -> dict | None:
-    doc = _get_db().collection("batches").document(batch_id).get()
-    return doc.to_dict() if doc.exists else None
-
-def list_batches(limit: int = 50) -> list[dict]:
-    docs = (
-        _get_db().collection("batches")
-        .order_by("created_at", direction=firestore.Query.DESCENDING)
-        .limit(limit)
-        .stream()
-    )
-    return [d.to_dict() for d in docs]
+# 後続でNameError
+product_state = {
+    "selected_version": version if video_record else "",  # ← NameError
+}
 ```
 
-移行コストを最小にするため、既存の `BATCH_STORE[batch_id]` への代入を `save_batch(batch_id, ...)` に、`BATCH_STORE.get(batch_id)` を `get_batch(batch_id)` に置換するだけで済む。
+**解決策（コード例）:**
+```python
+if existing_video_files:
+    video_path = existing_video_files[-1]
+    version = video_path.stem  # この1行を追加
+    effect = "zoom"
+    model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
+    video_record = {
+        "version": version,
+        ...
+    }
+```
 
-**実装コスト:** 中（Firestoreの有効化 + app.py内の約10箇所の置換）
-**期待効果:** Cloud Runのオートスケールが安全に機能するようになる。バッチ件数が増えてもメモリ圧迫なし
+`resume_batch` の同箇所（行 2880〜2889）にも同様の修正が必要。
+
+**実装コスト:** 低（2箇所にそれぞれ1行追加）
+**期待効果:** 同一ASINを2回以上処理した場合の500エラーを完全解消
 
 ---
 
-### 提案2: process_stream / resume_batch の共通ジェネレータ関数を抽出する
+### 提案2: ASINバリデーションを共通化してすべてのエンドポイントに適用
 
 **問題:**
+`/files/{asin}` エンドポイントにはASIN形式バリデーション（`^[A-Z0-9]{10}$`）が実装されているが、`/regenerate-video`・`/add-images`・`/finalize` には欠如している。ASINを検証せずにファイルシステムパスを構築するとパストラバーサルのリスクがある。
 
-Step1〜7の処理本体が `process_stream`（L2684）、`resume_batch`（L3193）、`restart_from_step`（L2302）の3エンドポイントにほぼ完全にコピーされている。特にStep4（画像翻訳ループ）は L2920〜L2970 / L3397〜L3437 / L2419〜L2461 の3箇所に存在する。
+また `/add-images` は外部URLに対してサーバーからHTTPリクエストを発行しており、URLサニタイズがないためSSRF（Server-Side Request Forgery）のリスクもある。
 
-1箇所のバグ修正を3箇所に同期する必要があり、現状すでに細かい差分が混入している。例として `resume_batch` では Step2の名前が「商品画像取得」（L3318）だが `process_stream` では「画像ダウンロード」（L2831）となっている。
+```python
+# 現状（危険）
+asin = data.get("asin", "")
+output_dir = config["output_base"] / asin  # asin未検証
+```
+
+**解決策（コード例）:**
+```python
+# app.py 上部に共通バリデーション関数を追加
+def validate_asin(asin: str) -> str:
+    if not asin or not re.match(r'^[A-Z0-9]{10}$', asin):
+        raise HTTPException(status_code=400, detail="無効なASIN形式です（10文字の英数字）")
+    return asin
+
+# 各エンドポイントで使用
+@app.post("/regenerate-video")
+async def regenerate_video(request: Request):
+    data = await request.json()
+    asin = validate_asin(data.get("asin", ""))
+    ...
+
+# add-images でのURL検証
+for url in image_urls:
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="無効なURLです")
+```
+
+**実装コスト:** 低（関数1つ追加 + 各エンドポイントに1〜2行追加）
+**期待効果:** パストラバーサルとSSRFのリスクを排除。セキュリティ要件を一元管理
+
+---
+
+### 提案3: `process_stream` と `resume_batch` の共通処理を関数化
+
+**問題:**
+Step1〜7の処理本体が `process_stream` と `resume_batch` の2箇所にほぼ完全に複製されている。PR#19で `restart-from-step` 相当機能が削除されたことで2箇所に減ったが、それでも700行超の重複が残っている。今回のバグ#1が両方に同じ形で存在していることがその証拠。
 
 **解決策（骨格）:**
-
 ```python
-# pipeline.py（新規ファイル）
-
-def _process_step4_image_translation(
-    image_paths: list,
-    product: dict,
-    openai_key: str,
-    asin: str,
-    output_dir: Path,
+# 単一商品の処理を yield するジェネレータ関数
+def _process_single_product_steps(
+    url: str,
     idx: int,
-    emit,  # callable
+    batch_id: str,
+    config: dict,
+    rainforest_key: str,
+    openai_key: str,
+    skip_image_translate: bool,
+    emit,  # callable(payload) -> str
 ) -> Generator:
-    """Step4の画像翻訳ループ。3エンドポイント共通。"""
-    total_images = len(image_paths)
-    est_per_image = 45
-    est = f"約{total_images * est_per_image}秒（{total_images}枚）"
-    yield emit({"type": "step", "index": idx, "step": 4,
-                "total": 7, "name": "画像テキスト英語化", "est": est})
+    """Step1-7の処理本体。process_stream / resume_batch 共通。"""
+    ...
 
-    en_dir = output_dir / "images_en"
-    en_dir.mkdir(exist_ok=True)
-    translated_paths = []
-    consecutive_failures = 0
-    max_consecutive_failures = 2
-    step4_start = time.time()
+# process_stream
+def generate():
+    for idx, url in enumerate(urls):
+        yield from _process_single_product_steps(url, idx, ...)
 
-    for img_i, img_path in enumerate(image_paths):
-        out_path = en_dir / f"{Path(img_path).stem}_en.png"
-        # ...（単一実装）
-        yield emit({"type": "step_progress", ...})
-
-    return translated_paths
+# resume_batch
+def generate():
+    for resume_i, url in enumerate(remaining_urls):
+        idx = stopped_at_index + resume_i
+        yield from _process_single_product_steps(url, idx, ...)
 ```
 
-各エンドポイントは `yield from _process_step4_image_translation(...)` を呼ぶだけになる。
-
-**実装コスト:** 高（リファクタリング作業量は大きいが、テストを書きながら進めれば安全）
-**期待効果:** バグ修正・機能追加が1箇所で済む。app.pyのコード量が約40%削減される見込み
+**実装コスト:** 高（リファクタリング規模が大きく、テストが必要）
+**期待効果:** バグ修正が1箇所で完結。app.pyのコード量が約35%削減
 
 ---
 
-### 提案3: gspreadの認証をセッションレベルでキャッシュする
+## PR別評価詳細
 
-**問題:**
+### PR#19: 演出名日本語化・画像検索UI永続化・-700行削除・resume_batchバグ修正
 
-`write_to_spreadsheet`（shopee_core.py L1189）、`append_video_generation_log`（L1264）、`fetch_video_generation_history`（L1322）、`fetch_product_sheet_history`（L1372）の4関数が、それぞれ独立してサービスアカウントの認証情報読み込み → gspread接続 → スプレッドシートオープンを実行している。
+**評価: 良好（ただし課題あり）**
 
-7ステップのパイプラインで毎ステップ `write_step_checkpoint` が呼ばれるため、1商品あたり最大7回の認証・接続が発生する。gspread の初期化は1回あたり約0.5〜1秒かかる。
+- `EFFECT_LABELS` 辞書の追加とUIへの適用は適切。サーバー側とクライアント側で対応が取れている
+- `searchShownAsins = new Set()` の永続化はUX改善として妥当。ページ再読み込みには消えるがセッション中は維持される
+- 再生成ステータス表示（`regenStatus` 要素）は適切に実装されている
+- `resume_batch` のAPIキー修正: `batch.get("openai_key", "") or os.environ.get(...)` の形は正しい（環境変数フォールバック）。ただしバッチJSONに `openai_key`・`rainforest_key` が保存されていないため、常に `""` → 環境変数フォールバックとなる。これは環境変数設定済み前提なら問題ないが、保存漏れが根本原因として残る
+- **問題:** `version` 変数の未定義バグが混入（または既存バグが残存）している
 
-**解決策:**
+### PR#20: 画像検索をGoogle CSE→Serper.devに切り替え
+
+**評価: 良好**
+
+- `_search_serper_images` の実装は適切。`X-API-KEY` ヘッダーでの認証、`timeout=15`、例外ハンドリング付き
+- `min(num, 10)` でSerper.devの上限を守っている
+- Serper失敗時のDuckDuckGoフォールバックにより可用性が向上している
+- フォールバック構成（Serper → DuckDuckGo）のログ出力が適切
+- **問題:** DuckDuckGoライブラリ未インストール時の `ImportError` が `except Exception` に捕捉されてリトライを繰り返す（無駄なsleep）
 
 ```python
-# shopee_core.py に追加
+# 現状（DuckDuckGo未インストール時に無駄なリトライ）
+for attempt in range(max_retries + 1):
+    try:
+        from duckduckgo_search import DDGS  # ImportError が毎回発生
+        ...
+    except Exception as e:
+        time.sleep(2 ** attempt)  # 1秒 + 2秒 待機して最終的に return []
 
-_gspread_ss_cache: dict = {}
-
-def _get_spreadsheet(config: dict):
-    """gspread Spreadsheetオブジェクトをプロセス内でキャッシュ。"""
-    key_path = str(config["gcp_key_path"])
-    ss_id = config["spreadsheet_id"]
-    cache_key = (key_path, ss_id)
-    if cache_key in _gspread_ss_cache:
-        return _gspread_ss_cache[cache_key]
-
-    creds = SACredentials.from_service_account_file(
-        key_path,
-        scopes=[
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
-        ],
-    )
-    gc = gspread.authorize(creds)
-    ss = gc.open_by_key(ss_id)
-    _gspread_ss_cache[cache_key] = ss
-    return ss
-
-# write_to_spreadsheet, append_video_generation_log 等の先頭を以下に置換:
-# Before: creds = SACredentials.from_service_account_file(...) / gc = gspread.authorize(creds) / ss = gc.open_by_key(...)
-# After:  ss = _get_spreadsheet(config)
+# 修正案
+try:
+    from duckduckgo_search import DDGS
+except ImportError:
+    logger.warning("duckduckgo-search が未インストールです")
+    return []
 ```
 
-**実装コスト:** 低（4関数の先頭10行を置換するだけ。工数1〜2時間）
-**期待効果:** スプレッドシートAPI呼び出しの初期化オーバーヘッドが7回→1回に削減。1商品あたり約3〜7秒の短縮
+### PR#21: /add-imagesがbatch_id消失時もダウンロード可能に
+
+**評価: 良好**
+
+- フォールバック設計が安全で適切:
+  ```python
+  existing_count = (
+      len(product.get("image_paths", [])) if product
+      else len(list((output_dir / "images").glob("*"))) if (output_dir / "images").exists()
+      else 0
+  )
+  ```
+- バッチが消えても画像ダウンロード自体は実行される設計
+- `product` が None の場合の分岐も適切に処理されている
+- **問題:** ASINバリデーションが欠如。`asin = data.get("asin", "")` の後に形式チェックがない
+
+### PR#22: /regenerate-videoがbatch消失時もファイルシステムから復元
+
+**評価: 概ね良好（要確認事項あり）**
+
+**ファイルシステム復元ロジックの安全性評価:**
+
+```python
+# PR#22 の復元ロジック
+if product:
+    product_image_paths = product.get("image_paths", [])
+    existing_videos = product.get("videos", [])
+    folder_id = product.get("drive_folder_id", "")
+    folder_url = product.get("drive_folder_url", "")
+    product_data = product.get("product", {})
+else:
+    # ファイルシステムから復元
+    images_dir = output_dir / "images"
+    product_image_paths = sorted([str(p) for p in images_dir.glob("*")]) if images_dir.exists() else []
+    existing_videos = [{"version": p.stem} for p in sorted(videos_dir.glob("*.mp4"))]
+    folder_id = ""
+    folder_url = ""
+    product_data = {}
+```
+
+**問題点1（バグ）:** `images_dir.glob("*")` は画像以外のファイル（`.DS_Store`、`.gitkeep`、その他）も拾う。非画像ファイルが `generate_video` に渡されると ffmpeg や fal.ai API がエラーになる。
+
+**問題点2（機能）:** `product_data = {}` の場合、`generate_video_kenburns` 内の `product.get("title_en", "Product")` が `"Product"` になり、テロップが空になる。fal.ai での AI 動画生成ならプロンプト（`EFFECT_PROMPTS`）から生成するため影響は少ないが、Ken Burns モードでは品質が低下する。
+
+**ドライブアップロードのフォールバック:**
+```python
+if folder_id:
+    drive_file_url = upload_file_to_drive_folder(video_path, folder_id, config)
+else:
+    # folder_id なし → 新規フォルダ作成してアップロード
+    drive_meta = upload_to_drive(asin, [], [], video_path, config, return_meta=True)
+    folder_url = drive_meta.get("folder_url", "")
+    ...
+```
+この2段階フォールバックは設計として正しい。既存フォルダへのアップロード失敗時にも新規フォルダを作成して動画を保存できる。
+
+```python
+# 修正案: 拡張子フィルタを追加
+VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
+product_image_paths = sorted([
+    str(p) for p in images_dir.glob("*")
+    if p.suffix.lower() in VALID_IMAGE_EXTS
+]) if images_dir.exists() else []
+```
 
 ---
 
 ## 潜在的な技術的負債
+（今すぐ直さなくてもいいが、将来リスクになりそうな箇所）
 
-### 1. Syncジェネレータ内のブロッキングAPI呼び出し（将来のスケールボトルネック）
+### 1. BATCH_STORE のインメモリ管理
 
-`process_stream`（L2702）の `generate()` は通常のPython同期ジェネレータ。内部で `fetch_amazon_product`（timeout=30秒）、`generate_video_ai`（fal.ai、120秒超）などのブロッキング呼び出しをしている。
+`BATCH_STORE = {}` はプロセスメモリ上のグローバル辞書。Cloud Run がスケールアウトして複数インスタンスになった瞬間、インスタンスAで作成したバッチをインスタンスBで参照できなくなる。現在はJSONファイルへの永続化（`save_batch_state`）で部分的に対応しているが、Cloud Run の各インスタンスがマウントするファイルシステムは独立している（共有ストレージなしの場合）。
 
-FastAPIはasyncフレームワークだが、`StreamingResponse` に同期ジェネレータを渡した場合、Starlette は `run_in_threadpool` でラップして実行する。これはWorkerスレッドプール（デフォルト40スレッド）を長時間占有する。10件バッチ × 165秒 = 約27分間スレッドを占有することになり、同時に3〜4バッチが走るとスレッドプールが枯渇する。
+回避策: `--min-instances=1 --max-instances=1` で単一インスタンス固定（現状の運用形態なら妥当）
+根本解決: Firestore または Cloud Storage への外部永続化
 
-将来の解決策: `async def generate()` + `asyncio.to_thread()` でブロッキング処理をラップ、または専用バックグラウンドタスクキュー（Cloud Tasks）への移行。
+### 2. sync ジェネレータ内のブロッキング処理
 
-### 2. BATCH_PAUSE_REQUESTS の競合状態
+`process_stream` と `resume_batch` の `generate()` は同期ジェネレータ。内部の `generate_video_ai`（fal.ai、最大120秒超）・`translate_image_text`（OpenAI、45秒/枚）がブロッキング呼び出しであり、Starletteが `run_in_threadpool` でラップするため、処理中はWorkerスレッドを長時間占有する。同時3〜4バッチでスレッドプールが枯渇するリスクがある。
 
-`BATCH_PAUSE_REQUESTS`（L59）もインメモリDictionary。`pause_batch` が `BATCH_PAUSE_REQUESTS[batch_id] = True` をセットしても、別インスタンスで動いている `generate()` ループには届かない。Cloud Run単一インスタンス運用中は機能するが、スケールアウト時に停止が効かなくなる。
+### 3. drive_video_proxy の OOM リスク
 
-### 3. /restart-from-step のASINバリデーション欠如
+動画ファイル（数十〜数百MB）をメモリに全展開してから返している。Cloud Run のデフォルトメモリ（256MB〜512MB）では大きな動画でOOMになりうる。HTTP Range リクエストにも非対応のため、動画シークが不可能。
 
-`restart_from_step`（L2303）は `batch_id` と `asin` をリクエストボディから受け取るが、ASINの形式チェック（`r'^[A-Z0-9]{10}$'`）がない。`/files/{asin}` エンドポイント（L2640）にはバリデーションがあるが、バッチ関連エンドポイントでは欠けている。悪意あるリクエストで任意のASIN文字列がバッチデータに混入する可能性がある。
+推奨: `StreamingResponse` によるチャンク転送、またはリダイレクト。
 
-### 4. /finalize のgspread APIコール集中（Rate Limit リスク）
+### 4. gspread認証の毎回実行
 
-`finalize`（L3748）の `for product in batch["results"]` ループ内で `write_to_spreadsheet` と `append_video_generation_log` を商品数分呼んでいる。各呼び出しがgspread APIを叩くため、10商品で最大20回のAPIコール。gspread の Rate Limit（100 requests/100 seconds）に引っかかる可能性がある。バッチ書き込み（`batch_update`）への移行が将来必要。
+`write_to_spreadsheet`・`append_video_generation_log`・`fetch_video_generation_history` が各呼び出しで独立してサービスアカウント認証 → gspread接続を実行している。1商品の処理で7回 `write_step_checkpoint` が呼ばれ、認証オーバーヘッドが蓄積する。プロセス内キャッシュ化で改善可能。
 
-### 5. 画像ファイルの拡張子判定ロジックの脆弱性
+### 5. app.py への巨大HTMLインライン埋め込み
 
-`download_images`（shopee_core.py L270）がURLに `.png` という文字列が含まれているかで拡張子を決定している。Content-Typeヘッダーを参照すべき。
+`INDEX_HTML`（約600行）がPythonファイルに直接埋め込まれており、HTMLの変更にPythonの再デプロイが必要。Jinja2テンプレートファイル分離または静的ファイル配信への移行を将来検討。
 
-```python
-# 現在（不正確）
-ext = "png" if ".png" in url.lower() else "jpg"
+### 6. ffmpeg の戻り値チェック欠如
 
-# 改善案
-content_type = resp.headers.get("content-type", "")
-ext = "png" if "png" in content_type else "jpg"
-```
-
-### 6. app.pyに埋め込まれた3,000行超のHTMLテンプレート
-
-`INDEX_HTML`（L343〜）がPythonファイルにインライン定義されており、ファイル全体の約80%を占める。HTMLの変更にPythonの再デプロイが必要で、静的ファイルのCDNキャッシュも効かない。将来的にJinja2テンプレートファイル分離またはStatic Files配信への移行を推奨。
+`generate_video_kenburns` 内の `subprocess.run` に `check=True` がなく、ffmpegがエラーコードを返しても例外が発生しない。生成された動画が破損していても後続のDriveアップロードまで進む可能性がある。
 
 ---
 
 ## 次のPhaseへの引き継ぎ事項
 
-### 即時対応推奨（本番障害リスク）
+### 即時対応必須（バグ）
 
-**[1] Cloud Run設定でmin-instances=1を強制するか、BATCH_STOREをFirestoreに移行する**
+| 優先 | 内容 | 対象ファイル・行 |
+|------|------|----------------|
+| P0 | 課題#1: `version` 変数未定義バグの修正 | `app.py` L2388〜2404（process_stream）および L2880〜2889（resume_batch）の既存動画スキップパスに `version = video_path.stem` を追加 |
 
-現状はインスタンスが2つ以上になった瞬間にバッチが消える。
+### 短期対応推奨（セキュリティ）
 
-- 最小コスト回避策: Cloud Runの `--min-instances=1 --max-instances=1` で単一インスタンス固定
-- 根本解決策: 提案1のFirestore移行
+| 優先 | 内容 | 対象ファイル・行 |
+|------|------|----------------|
+| P1 | 課題#2+#7: ASINバリデーション共通化 | `app.py` `/regenerate-video`、`/add-images` のエンドポイント先頭にバリデーション追加 |
+| P1 | 課題#4: 画像拡張子フィルタ追加 | `app.py` L3063 の `glob("*")` を `glob("*.jpg")` 等に変更 |
 
-**[2] APIキー受信方式の変更**
+### 中期対応推奨（品質・保守性）
 
-`/process-stream`（L2697）が `rainforest_key` と `openai_key` をリクエストボディで受け取っている。ブラウザのDevToolsで誰でも確認できる状態。
+| 優先 | 内容 |
+|------|------|
+| P2 | 提案3: `process_stream` / `resume_batch` の処理共通化（リファクタリング） |
+| P2 | 課題#6: `drive_video_proxy` のStreaming化またはリダイレクト化 |
+| P2 | ffmpeg `returncode` チェックの追加 |
+| P3 | DuckDuckGo `ImportError` の個別ハンドリング |
 
-改善案: 全APIキーを環境変数のみから取得し、リクエストボディからのキー受け入れを削除する。
+### 長期対応（アーキテクチャ）
 
-**[3] Cloud Runのリクエストタイムアウト設定確認**
-
-動画生成（fal.ai）のWait時間が最長で120秒を超えることがあり、Cloud Runのデフォルトリクエストタイムアウト（60秒）と競合する可能性がある。`--timeout=600` の設定を明示的に確認・設定すること。
-
-### 中期対応推奨（保守性向上）
-
-**[4] Step4画像翻訳ロジックの共通化（提案2）**
-
-現在3箇所にコピーが存在する。`_process_step4_image_translation(...)` として抽出し、3エンドポイントから呼び出す形に統一する。
-
-**[5] gspreadキャッシュの実装（提案3）**
-
-工数1〜2時間、リスクほぼゼロで実施可能。
-
-### アーキテクチャ観点での申し送り
-
-- 現在のSSEストリーミング設計は「ユーザー1人が1バッチを実行」というユースケースに最適化されており、複数ユーザーが同時実行した場合のスレッドプール枯渇リスクがある
-- 将来的に同時5バッチ以上を想定するなら、Cloud Tasks + Pub/Subによる非同期ジョブキューへの移行が必要
-- `shopee_core.py` の `process_product`（L1418）はCLI用パイプラインとして残っているが、Web API側の `generate()` ループと実装が乖離しており、将来の機能追加で混乱を招く可能性がある。Webルートに統一するか、CLIを完全分離することを推奨
+- `BATCH_STORE` の外部ストレージ（Firestore/GCS）移行（Cloud Run スケールアウト対応）
+- 重い処理（動画生成・画像翻訳）の非同期ジョブ化（Cloud Tasks 等）
+- バッチJSONへの `rainforest_key`・`openai_key` 保存（または完全環境変数化の明示）
+- `app.py` の HTMLテンプレート分離による保守性向上

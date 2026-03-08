@@ -1005,6 +1005,7 @@ async function runBatch(){
   reviewProducts=[];
   activeReviewProductIndex=0;
   currentBatchId='';
+  searchShownAsins.clear();
   document.getElementById('reviewTabs').innerHTML='';
   document.getElementById('reviewPanel').innerHTML='';
   document.getElementById('finalizeMsg').textContent='';
@@ -1171,11 +1172,11 @@ function handleEvent(evt){
           ${isPaused?'バッチ再開':'チャージ後にバッチ再開'}
         </button>
       `;
-      const panel=document.getElementById('progressPanel');
-      if(panel) panel.parentNode.insertBefore(resumeDiv,panel.nextSibling);
+      const panel=document.getElementById('progressSec');
+      if(panel) panel.appendChild(resumeDiv);
     }
     const btn=document.getElementById('runBtn');
-    if(btn){btn.disabled=false;btn.textContent='一括処理開始';}
+    if(btn){btn.disabled=false;btn.textContent='一括実行';}
   }else if(evt.type==='error'){
     if(progressProducts[evt.index]){
       if(evt.step>=1 && evt.step<=7){
@@ -2013,9 +2014,43 @@ a{{color:#ee4d2d;text-decoration:none;transition:color .2s}} a:hover{{color:#d43
 
 
 
+_ASIN_RE = re.compile(r'^[A-Z0-9]{10}$')
+_IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png"})
+
+
+def validate_asin(asin: str) -> str:
+    """ASINフォーマットを検証。不正な場合はHTTPExceptionを投げる。"""
+    if not _ASIN_RE.match(asin or ""):
+        raise HTTPException(status_code=400, detail="無効なASIN形式です")
+    return asin
+
+
+def _is_safe_url(url: str) -> bool:
+    """SSRF対策: 内部ネットワーク・メタデータサーバーへのアクセスをブロック。"""
+    try:
+        from urllib.parse import urlparse
+        import ipaddress
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        hostname = (parsed.hostname or "").lower()
+        blocked = {"metadata.google.internal", "metadata.internal", "169.254.169.254"}
+        if hostname in blocked:
+            return False
+        try:
+            addr = ipaddress.ip_address(hostname)
+            if addr.is_private or addr.is_loopback or addr.is_link_local:
+                return False
+        except ValueError:
+            pass
+        return True
+    except Exception:
+        return False
+
+
 @app.get("/files/{asin}/{path:path}")
 async def serve_file(asin: str, path: str):
-    if not re.match(r'^[A-Z0-9]{10}$', asin):
+    if not _ASIN_RE.match(asin):
         raise HTTPException(status_code=400, detail="Invalid ASIN format")
     file_path = OUTPUT_BASE / asin / path
     if not file_path.exists() or not file_path.is_file():
@@ -2387,10 +2422,11 @@ async def process_stream(request: Request):
             existing_video_files = sorted(videos_dir.glob("*.mp4")) if videos_dir.exists() else []
             if existing_video_files:
                 video_path = existing_video_files[-1]
+                version = video_path.stem
                 effect = "zoom"
                 model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
                 video_record = {
-                    "version": video_path.stem,
+                    "version": version,
                     "effect": effect,
                     "model": model,
                     "memo": "既存動画を再利用",
@@ -2430,31 +2466,31 @@ async def process_stream(request: Request):
                     video_path = None
                     yield emit({"type": "step_warn", "index": idx, "step": 5, "message": f"動画生成失敗: {e}"})
 
-            video_record = None
-            if video_path and video_path.exists():
-                video_record = {
-                    "version": version,
-                    "effect": effect,
-                    "model": model,
-                    "memo": "",
-                    "prompt_extra": "",
-                    "created_at": now_iso(),
-                    "video_path": str(video_path),
-                    "video_url": to_rel_video_url(asin, video_path),
-                    "drive_file_url": "",
-                    "source_image_path": str(image_paths[0]) if image_paths else "",
-                    "source_image_url": image_urls[0] if image_urls else "",
-                }
+                video_record = None
+                if video_path and video_path.exists():
+                    video_record = {
+                        "version": version,
+                        "effect": effect,
+                        "model": model,
+                        "memo": "",
+                        "prompt_extra": "",
+                        "created_at": now_iso(),
+                        "video_path": str(video_path),
+                        "video_url": to_rel_video_url(asin, video_path),
+                        "drive_file_url": "",
+                        "source_image_path": str(image_paths[0]) if image_paths else "",
+                        "source_image_url": image_urls[0] if image_urls else "",
+                    }
 
-                # 動画を即座にDriveへ保存
-                if drive_obj and folder_id:
-                    try:
-                        video_item = upload_video_to_drive(drive_obj, video_path, folder_id)
-                        video_record["drive_file_url"] = video_item.get("webViewLink", "")
-                        logger.info("Step5: 動画をDriveに保存完了")
-                    except Exception as e:
-                        logger.warning("Step5 動画Drive保存失敗: %s", e)
-                        yield emit({"type": "step_warn", "index": idx, "step": 5, "message": f"動画のDrive保存失敗: {e}"})
+                    # 動画を即座にDriveへ保存
+                    if drive_obj and folder_id:
+                        try:
+                            video_item = upload_video_to_drive(drive_obj, video_path, folder_id)
+                            video_record["drive_file_url"] = video_item.get("webViewLink", "")
+                            logger.info("Step5: 動画をDriveに保存完了")
+                        except Exception as e:
+                            logger.warning("Step5 動画Drive保存失敗: %s", e)
+                            yield emit({"type": "step_warn", "index": idx, "step": 5, "message": f"動画のDrive保存失敗: {e}"})
 
             yield emit({
                 "type": "step_done", "index": idx, "step": 5,
@@ -2879,6 +2915,7 @@ async def resume_batch(batch_id: str):
             video_record = None
             if existing_video_files:
                 video_path = existing_video_files[-1]
+                version = video_path.stem
                 effect = "zoom"
                 model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
                 video_record = {
@@ -3027,7 +3064,7 @@ async def resume_batch(batch_id: str):
 async def regenerate_video(request: Request):
     data = await request.json()
     batch_id = data.get("batch_id", "")
-    asin = data.get("asin", "")
+    asin = validate_asin(data.get("asin", ""))
     effect = data.get("effect", "zoom")
     memo = data.get("memo", "")
     selected_image_url = data.get("selected_image_url", "")
@@ -3060,7 +3097,7 @@ async def regenerate_video(request: Request):
     else:
         # ファイルシステムから復元
         images_dir = output_dir / "images"
-        product_image_paths = sorted([str(p) for p in images_dir.glob("*")]) if images_dir.exists() else []
+        product_image_paths = sorted([str(p) for p in images_dir.glob("*") if p.suffix.lower() in _IMAGE_EXTS]) if images_dir.exists() else []
         existing_videos = [{"version": p.stem} for p in sorted(videos_dir.glob("*.mp4"))]
         folder_id = ""
         folder_url = ""
@@ -3261,11 +3298,16 @@ async def api_add_images(request: Request):
     """検索結果から選択された画像をダウンロードし、バッチのproduct_stateに追加"""
     data = await request.json()
     batch_id = data.get("batch_id", "")
-    asin = data.get("asin", "")
+    asin = validate_asin(data.get("asin", ""))
     image_urls = data.get("image_urls", [])
 
     if not image_urls:
         raise HTTPException(status_code=400, detail="image_urlsが必要です")
+
+    # SSRF対策: 内部ネットワークへのアクセスをブロック
+    image_urls = [url for url in image_urls if _is_safe_url(url)]
+    if not image_urls:
+        raise HTTPException(status_code=400, detail="有効なURLがありません")
 
     config = get_config()
     output_dir = config["output_base"] / asin
@@ -3276,7 +3318,7 @@ async def api_add_images(request: Request):
         product = next((p for p in batch["results"] if p.get("asin") == asin), None)
 
     # バッチが消えていても画像ダウンロードは実行する
-    existing_count = len(product.get("image_paths", [])) if product else len(list((output_dir / "images").glob("*"))) if (output_dir / "images").exists() else 0
+    existing_count = len(product.get("image_paths", [])) if product else len([p for p in (output_dir / "images").glob("*") if p.suffix.lower() in _IMAGE_EXTS]) if (output_dir / "images").exists() else 0
 
     new_paths = download_supplemental_images(image_urls, output_dir, start_index=existing_count)
     new_urls = [f"/files/{asin}/images/{Path(p).name}" for p in new_paths]

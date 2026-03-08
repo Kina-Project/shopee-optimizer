@@ -1,139 +1,95 @@
-# Shopee Optimizer - フルパイプライン品質評価 最終レポート
+# Shopee Optimizer チーム品質評価 最終レポート（第2回）
 
-**評価日:** 2026-03-08
-**対象PR:** #17 (feat/per-step-spreadsheet-write)
-**評価チーム:** 8名（エンジニア5名 + ペルソナ3名）
-
----
-
-## 総合スコア: 45/100点 (閾値80点未達)
-
-| 評価軸 | 配点 | スコア | 主な根拠 |
-|--------|------|--------|----------|
-| 機能性 | 25 | 17 | 7ステップ処理は動作するが、resume時のAPIキー消失バグ、fal.aiタイムアウト未設定 |
-| UX/使いやすさ | 20 | 12 | 進捗表示は良好だが、専門用語多い、再開ボタン表示バグ、アクセシビリティ不足 |
-| セキュリティ | 20 | 4 | 認証ゼロ、OAuthシークレット平文、SSRF、XSS（playVideo） |
-| 保守性 | 20 | 7 | 3関数1120行コピペ、テストゼロ、ファイル3600行超 |
-| パフォーマンス | 15 | 5 | ブロッキングI/O、BATCH_STOREインメモリ、Cloud Runタイムアウト未設定 |
+**評価日**: 2026-03-08
+**対象PR**: #19〜#22（日本語化・画像検索・バッチ消失対応・Serper移行・セキュリティ修正）
+**評価チーム**: 8名（エンジニア5名 + ペルソナ3名）
+**前回評価**: PR#17時点 45/100 → 今回 62/100（+17）
 
 ---
 
-## チーム別スコアサマリー
+## 総合スコア: 62/100点
 
-| チーム | スコア | 主要指摘 |
-|--------|--------|----------|
-| security-auditor | 6/20 | OAuthシークレット平文、認証欠如、SSRF |
-| senior-backend | 36/60 | BATCH_STOREインメモリ、3関数コピペ、ブロッキングI/O |
-| senior-frontend | 53/100 | progressPanelバグ、playVideo XSS、アクセシビリティ |
-| devops-expert | 38/100 | 認証なし公開、テストゲート皆無、タイムアウト未設定 |
-| qa-engineer | 36/100 | テストゼロ、fal.aiタイムアウトなし、APIキー引き継ぎ不能 |
-| persona-beginner | 59/140 | 専門用語、エラーメッセージに対策なし |
-| persona-poweruser | 68/100 | バッチ上限10件、キーボードショートカットなし |
-| persona-enterprise | 20/100 | 認証なし、監査ログなし、マルチテナント非対応 |
+| 評価軸 | 配点 | スコア | 前回 | 変化 | 主な根拠 |
+|--------|------|--------|------|------|----------|
+| 機能性 | 25 | 18 | 17 | +1 | batch消失対応・Serper移行は良好。video_record上書きバグ→修正済み |
+| UX/使いやすさ | 20 | 12 | 12 | ±0 | ステップ進捗・再生成ステータス良好。alert多用・再開ボタン非表示→修正済み |
+| セキュリティ | 20 | 12 | 4 | +8 | ASIN検証・SSRF対策追加。認証未実装はHIGH(将来対応) |
+| 保守性 | 20 | 11 | 7 | +4 | restart-from-step削除で3重→2重に。700行重複は残存 |
+| パフォーマンス | 15 | 9 | 5 | +4 | SSE設計は良好。innerHTML毎秒再生成が課題 |
 
 ---
 
-## CRITICAL指摘一覧（必ず修正）
+## 本セッションで修正済みの問題
 
-| # | 指摘 | 報告元 | PR#17関連 |
-|---|------|--------|-----------|
-| C-1 | OAuthシークレット平文コミット（client_secret_*.json） | security | いいえ（既存） |
-| C-2 | 全エンドポイント認証なし | security, devops, enterprise | いいえ（既存） |
-| C-3 | BATCH_STOREインメモリ（マルチインスタンスで消失） | backend, qa | いいえ（既存） |
-| C-4 | テストカバレッジゼロ | qa | いいえ（既存） |
-| C-5 | fal_client.subscribeにタイムアウトなし（無限ハング） | qa | いいえ（既存） |
+### P0: バグ修正（5件）
 
-## HIGH指摘一覧（可能な限り修正）
+| # | 問題 | 修正内容 |
+|---|------|---------|
+| 1 | `version`変数未定義（Step5スキップパス） | `version = video_path.stem` を process_stream + resume_batch に追加 |
+| 2 | `video_record`がif/else外で`None`に上書き | `video_record = None`を`else`ブロック内に移動 |
+| 3 | `searchShownAsins`が次バッチでリセットされない | `runBatch()`冒頭に`searchShownAsins.clear()`追加 |
+| 4 | `batchResumeBar`挿入先IDが存在しない | `progressPanel`→`progressSec`+`appendChild`に修正 |
+| 5 | ボタンテキスト不一致 | 「一括実行」に統一 |
 
-| # | 指摘 | 報告元 | PR#17関連 |
-|---|------|--------|-----------|
-| H-1 | playVideo() XSSリスク（innerHTML直接展開） | frontend | **はい（新規）** |
-| H-2 | バッチ再開ボタン表示バグ（progressPanel→productPanel） | frontend | いいえ（既存） |
-| H-3 | SSRFリスク（/add-imagesのURL未検証） | security | いいえ（既存） |
-| H-4 | resume_batch APIキー引き継ぎ不能 | qa | いいえ（既存） |
-| H-5 | process_stream/resume_batch/restart 3重コピペ1120行 | backend | いいえ（既存） |
-| H-6 | CI/CDにテストゲート皆無（push-to-prod状態） | devops | いいえ（既存） |
-| H-7 | Cloud Runタイムアウト未設定（動画生成が300秒超過） | devops | いいえ（既存） |
+### CRITICAL: セキュリティ修正（3件）
+
+| # | 問題 | 修正内容 |
+|---|------|---------|
+| 1 | `/regenerate-video`と`/add-images`でASIN未検証（パストラバーサル） | `validate_asin()`共通関数追加 |
+| 2 | `/add-images`のimage_urlsにSSRF対策なし | `_is_safe_url()`で内部ネットワーク・メタデータサーバーをブロック |
+| 3 | ファイルシステム復元時に非画像ファイル混入 | `_IMAGE_EXTS`フィルタ追加 |
 
 ---
 
-## PR#17 マージ判定
+## 未対応の指摘事項
 
-### 判定: 条件付きマージ可
+### HIGH（次スプリント推奨）
 
-PR#17自体の変更（スプレッドシート中間保存、動画プレビュー、再生成UI）は機能的に正しく、
-既存の問題を悪化させるものではない。
+| # | 問題 | 報告元 |
+|---|------|--------|
+| 1 | 全エンドポイントに認証なし | security-auditor |
+| 2 | APIキーをリクエストボディから受け取れる | security-auditor |
+| 3 | EFFECT_LABELS 3箇所重複定義 | senior-frontend |
+| 4 | regenStatus timerのDOMライフサイクル問題 | senior-frontend |
+| 5 | /drive-video IDORリスク | security-auditor |
 
-**マージ前に必須修正（PR#17で導入された問題）:**
+### MEDIUM（計画対応）
 
-1. **H-1: playVideo() XSSリスク** — innerHTMLを使わずDOM APIで動画要素を生成する
+| # | 問題 | 報告元 |
+|---|------|--------|
+| 1 | CSP/HSTSヘッダー未設定 | security-auditor |
+| 2 | process_stream/resume_batch 700行重複 | backend, devops |
+| 3 | BATCH_STOREインメモリ（スケールダウンで消失） | devops |
+| 4 | /finalizeにbatch消失時復元パスなし | qa-engineer |
+| 5 | SERPER_API_KEYをSecret Manager移行 | devops |
+| 6 | alert()をトースト通知に置換 | senior-frontend |
+| 7 | アクセシビリティ: label/ARIA/コントラスト | senior-frontend |
+| 8 | batch消失時のexisting_videosにvideo_url/effect欠如 | senior-frontend |
 
-**マージ後に対応すべき既存課題（優先度順）:**
+### LOW / 長期
 
-1. C-1: client_secret_*.jsonを.gitignoreに追加 + git履歴からパージ + シークレットローテーション
-2. H-2: progressPanel → productPanel のID修正
-3. C-5: fal_client.subscribeにタイムアウト追加
-4. H-4: resume_batch APIキー引き継ぎ
-5. C-2: Cloud IAP or API Gateway認証の導入
-6. H-7: Cloud Runタイムアウト/メモリ/CPU設定の明示
-
----
-
-## 改善ロードマップ
-
-### Phase 1: 即時対応（今回PR内）
-- [ ] playVideo() XSS修正
-
-### Phase 2: 短期（1-2週間）
-- [ ] client_secret.jsonの除去 + .gitignore
-- [ ] progressPanel IDバグ修正
-- [ ] fal_client タイムアウト追加
-- [ ] resume_batch APIキー引き継ぎ修正
-
-### Phase 3: 中期（2-4週間）
-- [ ] Cloud IAP認証導入
-- [ ] Cloud Run設定最適化（タイムアウト/メモリ/CPU）
-- [ ] CI/CDにテストゲート追加
-- [ ] 3関数コピペのリファクタリング
-
-### Phase 4: 長期（1-2ヶ月）
-- [ ] BATCH_STOREのFirestore移行
-- [ ] テスト基盤構築（80%カバレッジ目標）
-- [ ] 監査ログ実装
-- [ ] SSRF対策（URL allowlist）
+- app.py HTMLインライン→テンプレート分離
+- drive_video_proxyのStreaming化
+- ffmpeg戻り値チェック
+- GCSバッチ状態永続化
+- DuckDuckGo ImportError個別ハンドリング
 
 ---
 
-## プロセス改善: consistency-checker エージェントの導入
+## ペルソナ評価
 
-### 問題: 今回の評価サイクルで修正回数が多かった
+| ペルソナ | 主な指摘 |
+|---------|---------|
+| 初心者 | 専門用語が多い。URLの貼り方がわからない。「タブ追加」の意味不明 |
+| パワーユーザー | キーボードショートカットなし。CSVエクスポートなし |
+| エンタープライズ | 認証なし・監査ログなし。社内審査を通過不可 |
 
-今回のPR #17では、マージ後に以下の追加修正が必要になった：
+---
 
-| # | 修正内容 | 原因 |
-|---|---------|------|
-| 1 | playVideo() XSS修正 | チームレビューで検出 → 修正 |
-| 2 | Drive動画プレビュー不可 | DriveのURL形式が再生に不向き → プロキシ配信に変更 |
-| 3 | 履歴ページでローカル動画がない | Cloud Runエフェメラル前提の考慮漏れ |
+## デプロイ判定
 
-これらの修正は**1箇所を直すたびに、同じパターンの別箇所で同じ問題が残る**という連鎖を生みやすい。
-例えば `drive_file_url` の表示方法を履歴ページで修正しても、レビュー画面やバッチ結果画面では未修正のまま、という状態。
+- [x] P0バグ5件 → 修正済み
+- [x] CRITICALセキュリティ3件 → 修正済み
+- [ ] HIGH認証問題 → Cloud Run IAM設定で外部アクセス制限済みなら許容
 
-### 対策: consistency-checker エージェントを新設
-
-**役割:** 1つの修正パターンが入ったとき、同じパターンを全コードベースでGrep検索し、修正漏れを洗い出す。
-
-**期待効果:**
-- 修正→テスト→別箇所発見→再修正 のループが減る
-- 3関数コピペ（process_stream / resume_batch / restart_from_step）間の不整合を早期検出
-- 1回のレビューサイクルで関連箇所を一括修正できる
-
-**具体例（今回のケースに当てはめると）:**
-- Drive動画URLをプロキシに変換する修正を入れた時点で
-- consistency-checkerが `drive_file_url` の全使用箇所を検索
-- 履歴ページ・レビュー画面・バッチ結果・動画生成ログなど全箇所をリスト化
-- 同じ修正が必要な箇所をMUST_FIXとして報告
-- → 1回の修正サイクルで全箇所対応完了
-
-**設置場所:** `~/.claude/agents/consistency-checker.md`
-**起動タイミング:** `/team` 実行時に他の8エージェントと並列起動（計9エージェント）
+**→ デプロイ可能。** PR作成・マージ・デプロイに進める。
