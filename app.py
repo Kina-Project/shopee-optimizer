@@ -15,6 +15,11 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+try:
+    from google.cloud import storage as gcs_storage
+except ImportError:
+    gcs_storage = None
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -58,6 +63,79 @@ EST_PER_PRODUCT_SEC = 165
 
 BATCH_STORE = {}
 BATCH_PAUSE_REQUESTS: dict[str, bool] = {}
+
+# ── GCS 永続化 ──────────────────────────────────────────
+GCS_BATCH_BUCKET = os.environ.get("GCS_BATCH_BUCKET", "")
+_gcs_client = None
+_gcs_bucket = None
+
+
+def _get_gcs_bucket():
+    """GCSバケットを遅延初期化して返す。未設定 or 初期化失敗時は None。"""
+    global _gcs_client, _gcs_bucket
+    if not GCS_BATCH_BUCKET or gcs_storage is None:
+        return None
+    if _gcs_bucket is not None:
+        return _gcs_bucket
+    try:
+        _gcs_client = gcs_storage.Client()
+        _gcs_bucket = _gcs_client.bucket(GCS_BATCH_BUCKET)
+        logger.info("GCS batch bucket initialized: %s", GCS_BATCH_BUCKET)
+        return _gcs_bucket
+    except Exception as exc:
+        logger.warning("GCS bucket init failed (continuing without GCS): %s", exc)
+        return None
+
+
+def _gcs_upload_batch(batch_id: str, data: str):
+    """バッチ状態JSONをGCSにアップロード（ベストエフォート）。"""
+    bucket = _get_gcs_bucket()
+    if bucket is None:
+        return
+    try:
+        blob = bucket.blob(f"batches/{batch_id}.json")
+        blob.upload_from_string(data, content_type="application/json")
+    except Exception as exc:
+        logger.warning("GCS upload failed for %s: %s", batch_id, exc)
+
+
+def _gcs_download_batch(batch_id: str) -> dict | None:
+    """GCSからバッチ状態JSONを取得。無い or 失敗時は None。"""
+    bucket = _get_gcs_bucket()
+    if bucket is None:
+        return None
+    try:
+        blob = bucket.blob(f"batches/{batch_id}.json")
+        if not blob.exists():
+            return None
+        data = blob.download_as_text(encoding="utf-8")
+        return json.loads(data)
+    except Exception as exc:
+        logger.warning("GCS download failed for %s: %s", batch_id, exc)
+        return None
+
+
+def _gcs_list_batches(limit: int = 200) -> list[dict]:
+    """GCSからバッチ状態JSONを一覧取得（ベストエフォート）。"""
+    bucket = _get_gcs_bucket()
+    if bucket is None:
+        return []
+    results: list[dict] = []
+    try:
+        blobs = bucket.list_blobs(prefix="batches/", max_results=limit)
+        for blob in blobs:
+            if not blob.name.endswith(".json"):
+                continue
+            try:
+                data = blob.download_as_text(encoding="utf-8")
+                batch = json.loads(data)
+                if batch.get("batch_id"):
+                    results.append(batch)
+            except Exception:
+                continue
+    except Exception as exc:
+        logger.warning("GCS list batches failed: %s", exc)
+    return results
 
 EFFECT_LABELS = {
     "zoom": "ズーム",
@@ -271,18 +349,18 @@ def save_batch_state(batch_id: str):
     batch = BATCH_STORE.get(batch_id)
     if not batch:
         return
+    data = json.dumps(batch, ensure_ascii=False, indent=2)
     path = batch_state_path(batch_id)
-    path.write_text(
-        json.dumps(batch, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    path.write_text(data, encoding="utf-8")
+    _gcs_upload_batch(batch_id, data)
 
 
 def get_batch_or_none(batch_id: str):
-    """BATCH_STOREから取得し、なければファイルから復元する。"""
+    """BATCH_STOREから取得し、なければファイル→GCSの順で復元する。"""
     batch = BATCH_STORE.get(batch_id)
     if batch:
         return batch
+    # ローカルファイルから復元
     path = batch_state_path(batch_id)
     if path.exists():
         try:
@@ -291,6 +369,19 @@ def get_batch_or_none(batch_id: str):
             return batch
         except Exception:
             pass
+    # GCSから復元
+    batch = _gcs_download_batch(batch_id)
+    if batch:
+        BATCH_STORE[batch_id] = batch
+        # ローカルにもキャッシュ保存
+        try:
+            path.write_text(
+                json.dumps(batch, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        return batch
     return None
 
 
@@ -320,16 +411,32 @@ def _merge_local_videos(product_state: dict, videos_dir: Path):
 
 def load_batch_store():
     BATCH_STORE.clear()
-    if not BATCH_STATE_DIR.exists():
-        return
-    for p in sorted(BATCH_STATE_DIR.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True)[:200]:
-        try:
-            batch = json.loads(p.read_text(encoding="utf-8"))
+    if BATCH_STATE_DIR.exists():
+        for p in sorted(BATCH_STATE_DIR.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True)[:200]:
+            try:
+                batch = json.loads(p.read_text(encoding="utf-8"))
+                batch_id = batch.get("batch_id")
+                if batch_id:
+                    BATCH_STORE[batch_id] = batch
+            except Exception:
+                continue
+    # ローカルが空の場合、GCSから復元
+    if not BATCH_STORE:
+        for batch in _gcs_list_batches(limit=200):
             batch_id = batch.get("batch_id")
-            if batch_id:
+            if batch_id and batch_id not in BATCH_STORE:
                 BATCH_STORE[batch_id] = batch
-        except Exception:
-            continue
+                # ローカルにもキャッシュ保存
+                try:
+                    path = batch_state_path(batch_id)
+                    path.write_text(
+                        json.dumps(batch, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+        if BATCH_STORE:
+            logger.info("Restored %d batches from GCS", len(BATCH_STORE))
 
 
 INDEX_HTML = """<!DOCTYPE html>
@@ -2054,17 +2161,105 @@ def _is_safe_url(url: str) -> bool:
 async def serve_file(asin: str, path: str):
     if not _ASIN_RE.match(asin):
         raise HTTPException(status_code=400, detail="Invalid ASIN format")
-    file_path = OUTPUT_BASE / asin / path
-    if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
-    if not file_path.resolve().is_relative_to(OUTPUT_BASE.resolve()):
-        raise HTTPException(status_code=403, detail="Forbidden")
-    suffix = file_path.suffix.lower()
+
     media_types = {
         ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
         ".png": "image/png", ".mp4": "video/mp4", ".json": "application/json",
     }
-    return FileResponse(file_path, media_type=media_types.get(suffix, "application/octet-stream"))
+
+    # 1. ローカルファイルが存在すればそのまま返す
+    file_path = OUTPUT_BASE / asin / path
+    if file_path.exists() and file_path.is_file():
+        if not file_path.resolve().is_relative_to(OUTPUT_BASE.resolve()):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        suffix = file_path.suffix.lower()
+        return FileResponse(file_path, media_type=media_types.get(suffix, "application/octet-stream"))
+
+    # 2. ローカルに無い場合、Driveからフォールバック取得
+    try:
+        from shopee_core import _get_drive_service, _find_existing_file, _find_existing_folder
+
+        # バッチデータからdrive_folder_idを取得
+        _, product = find_batch_for_asin(asin)
+        if not product:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        drive_folder_id = product.get("drive_folder_id", "")
+        if not drive_folder_id:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        config = get_config()
+        drive = _get_drive_service(config)
+
+        # pathを解析: "images/xxx.jpg", "images_en/xxx.png", "videos/v1.mp4" など
+        path_parts = Path(path)
+        file_name = path_parts.name
+        sub_folders = list(path_parts.parent.parts)  # 例: ["images"], ["images_en"], ["videos"]
+
+        # サブフォルダがある場合、Driveフォルダを辿る
+        current_folder_id = drive_folder_id
+        for folder_name in sub_folders:
+            if folder_name == ".":
+                continue
+            sub = _find_existing_folder(drive, current_folder_id, folder_name)
+            if not sub:
+                raise HTTPException(status_code=404, detail="File not found")
+            current_folder_id = sub["id"]
+
+        # ファイルを検索
+        found = _find_existing_file(drive, current_folder_id, file_name)
+        if not found:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        # Drive APIでファイル内容を取得
+        import io
+        from googleapiclient.http import MediaIoBaseDownload
+
+        file_id = found["id"]
+        request = drive.files().get_media(fileId=file_id)
+
+        suffix = Path(file_name).suffix.lower()
+        content_type = media_types.get(suffix, "application/octet-stream")
+
+        # 動画など大きいファイルはStreamingResponseで返す
+        if suffix == ".mp4":
+            buf = io.BytesIO()
+            downloader = MediaIoBaseDownload(buf, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+            buf.seek(0)
+
+            def iterfile():
+                while True:
+                    chunk = buf.read(1024 * 1024)  # 1MB chunks
+                    if not chunk:
+                        break
+                    yield chunk
+
+            return StreamingResponse(
+                iterfile(),
+                media_type=content_type,
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
+        else:
+            buf = io.BytesIO()
+            downloader = MediaIoBaseDownload(buf, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+            buf.seek(0)
+            return Response(
+                content=buf.read(),
+                media_type=content_type,
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("Drive fallback failed for %s/%s: %s", asin, path, e)
+        raise HTTPException(status_code=404, detail="File not found")
 
 
 @app.get("/drive-video/{file_id}")
