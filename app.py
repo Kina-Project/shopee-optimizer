@@ -2324,13 +2324,32 @@ async def process_stream(request: Request):
             translated_image_paths = []
             if openai_key and not skip_image_translate:
                 # 既存の翻訳画像があればスキップ（API費節約）
+                # ローカル → Drive の順でチェック
                 en_dir = output_dir / "images_en"
                 existing_en_files = sorted(en_dir.glob("*_en.png")) if en_dir.exists() else []
+                if not existing_en_files and folder_id:
+                    # ローカルに無い場合、Drive上のimages_enフォルダをチェック
+                    try:
+                        from shopee_core import _find_existing_folder, _get_drive_service, list_drive_folder_images
+                        _drv = drive_obj or _get_drive_service(config)
+                        if _drv:
+                            _en_folder = _find_existing_folder(_drv, folder_id, "images_en")
+                            if _en_folder:
+                                _en_ids = list_drive_folder_images(_en_folder["id"], config=config)
+                                if _en_ids:
+                                    existing_en_files = _en_ids  # Drive上に翻訳画像あり
+                    except Exception as e:
+                        logger.warning("Drive images_enチェック失敗: %s", e)
                 if existing_en_files:
-                    translated_image_paths = [p for p in existing_en_files]
-                    translated_image_urls = [f"/files/{asin}/images_en/{p.name}" for p in existing_en_files]
+                    if isinstance(existing_en_files[0], Path):
+                        translated_image_paths = [p for p in existing_en_files]
+                        translated_image_urls = [f"/files/{asin}/images_en/{p.name}" for p in existing_en_files]
+                    else:
+                        # Drive上のIDリスト（ローカルに無い場合）
+                        translated_image_paths = []
+                        translated_image_urls = [f"https://lh3.googleusercontent.com/d/{did}=w400" for did in existing_en_files]
                     yield emit({"type": "step_skip", "index": idx, "step": 4, "name": "画像テキスト英語化", "reason": f"既存の翻訳画像を使用（{len(existing_en_files)}枚）。再翻訳はレビュー画面から行えます"})
-                    yield emit({"type": "step_done", "index": idx, "step": 4, "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}})
+                    yield emit({"type": "step_done", "index": idx, "step": 4, "data": {"translated_count": len(existing_en_files), "translated_image_urls": translated_image_urls}})
                 else:
                     total_images = len(image_paths)
                     est_per_image = 45  # 秒/枚
@@ -2826,11 +2845,27 @@ async def resume_batch(batch_id: str):
                 # 既存の翻訳画像があればスキップ（API費節約）
                 en_dir = output_dir / "images_en"
                 existing_en_files = sorted(en_dir.glob("*_en.png")) if en_dir.exists() else []
+                if not existing_en_files and folder_id:
+                    try:
+                        from shopee_core import _find_existing_folder, _get_drive_service, list_drive_folder_images
+                        _drv = drive_obj or _get_drive_service(config)
+                        if _drv:
+                            _en_folder = _find_existing_folder(_drv, folder_id, "images_en")
+                            if _en_folder:
+                                _en_ids = list_drive_folder_images(_en_folder["id"], config=config)
+                                if _en_ids:
+                                    existing_en_files = _en_ids
+                    except Exception as e:
+                        logger.warning("Resume Drive images_enチェック失敗: %s", e)
                 if existing_en_files:
-                    translated_image_paths = [p for p in existing_en_files]
-                    translated_image_urls = [f"/files/{asin}/images_en/{p.name}" for p in existing_en_files]
+                    if isinstance(existing_en_files[0], Path):
+                        translated_image_paths = [p for p in existing_en_files]
+                        translated_image_urls = [f"/files/{asin}/images_en/{p.name}" for p in existing_en_files]
+                    else:
+                        translated_image_paths = []
+                        translated_image_urls = [f"https://lh3.googleusercontent.com/d/{did}=w400" for did in existing_en_files]
                     yield emit({"type": "step_skip", "index": idx, "step": 4, "name": "画像テキスト英語化", "reason": f"既存の翻訳画像を使用（{len(existing_en_files)}枚）。再翻訳はレビュー画面から行えます"})
-                    yield emit({"type": "step_done", "index": idx, "step": 4, "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}})
+                    yield emit({"type": "step_done", "index": idx, "step": 4, "data": {"translated_count": len(existing_en_files), "translated_image_urls": translated_image_urls}})
                 else:
                     total_images = len(image_paths)
                     est_per_image = 45
