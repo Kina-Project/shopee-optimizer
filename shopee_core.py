@@ -975,6 +975,26 @@ def _drive_api_retry(func, max_retries=3):
                 raise
 
 
+def _find_existing_file(drive, parent_id, file_name):
+    """親フォルダ内で同名ファイルを検索。見つかればメタデータを返す。"""
+    q = (
+        f"trashed=false and "
+        f"name='{_escape_drive_query(file_name)}' and '{_escape_drive_query(parent_id)}' in parents"
+    )
+    def _do_list():
+        return drive.files().list(
+            q=q,
+            pageSize=1,
+            orderBy="modifiedTime desc",
+            fields="files(id, webViewLink)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
+    res = _drive_api_retry(_do_list)
+    files = res.get("files", [])
+    return files[0] if files else None
+
+
 def _upload_file_to_drive(drive, file_path, parent_id):
     from googleapiclient.http import MediaFileUpload
     name = Path(file_path).name
@@ -989,6 +1009,24 @@ def _upload_file_to_drive(drive, file_path, parent_id):
     # 5MB以上のファイルはresumableアップロード（動画向け）
     resumable = file_size > 5 * 1024 * 1024
     media = MediaFileUpload(str(file_path), mimetype=mime, resumable=resumable)
+
+    # 同名ファイルが既に存在すれば: 動画は上書き更新、画像はスキップ
+    existing = _find_existing_file(drive, parent_id, name)
+    if existing:
+        if suffix == ".mp4":
+            # 動画は再生成されるので上書き
+            def _do_update():
+                return drive.files().update(
+                    fileId=existing["id"],
+                    media_body=media,
+                    fields="id, webViewLink",
+                    supportsAllDrives=True,
+                ).execute()
+            return _drive_api_retry(_do_update)
+        else:
+            # 画像等はスキップして既存のメタデータを返す
+            return existing
+
     def _do_upload():
         return drive.files().create(
             body={"name": name, "parents": [parent_id]},
@@ -1110,14 +1148,17 @@ def upload_translated_images_to_drive(drive, translated_paths, folder_id):
     """翻訳画像をDriveのimages_enサブフォルダへアップロード。"""
     if not translated_paths:
         return
-    en_folder_meta = {
-        "name": "images_en",
-        "mimeType": "application/vnd.google-apps.folder",
-        "parents": [folder_id],
-    }
-    def _do_create_en_folder():
-        return drive.files().create(body=en_folder_meta, fields="id", supportsAllDrives=True).execute()
-    en_folder = _drive_api_retry(_do_create_en_folder)
+    # 既存のimages_enフォルダを検索、なければ作成
+    en_folder = _find_existing_folder(drive, folder_id, "images_en")
+    if not en_folder:
+        en_folder_meta = {
+            "name": "images_en",
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [folder_id],
+        }
+        def _do_create_en_folder():
+            return drive.files().create(body=en_folder_meta, fields="id", supportsAllDrives=True).execute()
+        en_folder = _drive_api_retry(_do_create_en_folder)
     for img in translated_paths:
         _upload_file_to_drive(drive, img, en_folder["id"])
 
