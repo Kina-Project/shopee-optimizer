@@ -6,6 +6,8 @@ venv/
 
 # Secrets — NEVER commit
 .env
+credentials.json
+client_secret_*.json
 
 # Runtime artifacts
 output/
