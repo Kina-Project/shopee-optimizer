@@ -2442,10 +2442,27 @@ async def process_stream(request: Request):
 
             # Step 5: 動画生成 + 即座にDrive保存
             # 既存の動画があればスキップ（API費節約）
+            # ローカル → Drive の順でチェック
             existing_video_files = sorted(videos_dir.glob("*.mp4")) if videos_dir.exists() else []
-            if existing_video_files:
-                video_path = existing_video_files[-1]
-                version = video_path.stem
+            _drive_video_exists = False
+            if not existing_video_files and folder_id:
+                try:
+                    from shopee_core import _find_existing_file, _get_drive_service
+                    _drv = drive_obj or _get_drive_service(config)
+                    if _drv:
+                        # フォルダ直下のv1.mp4等をチェック
+                        _vf = _find_existing_file(_drv, folder_id, "v1.mp4")
+                        if _vf:
+                            _drive_video_exists = True
+                except Exception as e:
+                    logger.warning("Drive動画チェック失敗: %s", e)
+            if existing_video_files or _drive_video_exists:
+                if existing_video_files:
+                    video_path = existing_video_files[-1]
+                    version = video_path.stem
+                else:
+                    video_path = None
+                    version = "v1"
                 effect = "zoom"
                 model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
                 video_record = {
@@ -2455,13 +2472,14 @@ async def process_stream(request: Request):
                     "memo": "既存動画を再利用",
                     "prompt_extra": "",
                     "created_at": now_iso(),
-                    "video_path": str(video_path),
-                    "video_url": to_rel_video_url(asin, video_path),
+                    "video_path": str(video_path) if video_path else "",
+                    "video_url": to_rel_video_url(asin, video_path) if video_path else "",
                     "drive_file_url": "",
                     "source_image_path": str(image_paths[0]) if image_paths else "",
                     "source_image_url": image_urls[0] if image_urls else "",
                 }
-                yield emit({"type": "step_skip", "index": idx, "step": 5, "name": "動画生成", "reason": f"既存の動画を使用（{len(existing_video_files)}本）。再生成はレビュー画面から行えます"})
+                skip_count = len(existing_video_files) if existing_video_files else 1
+                yield emit({"type": "step_skip", "index": idx, "step": 5, "name": "動画生成", "reason": f"既存の動画を使用（{skip_count}本）。再生成はレビュー画面から行えます"})
             else:
                 effect = "zoom"
                 model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
@@ -2944,19 +2962,35 @@ async def resume_batch(batch_id: str):
             # Step 5: 動画生成
             # 既存の動画があればスキップ（API費節約）
             existing_video_files = sorted(videos_dir.glob("*.mp4")) if videos_dir.exists() else []
+            _drive_video_exists = False
+            if not existing_video_files and folder_id:
+                try:
+                    from shopee_core import _find_existing_file, _get_drive_service
+                    _drv = drive_obj or _get_drive_service(config)
+                    if _drv:
+                        _vf = _find_existing_file(_drv, folder_id, "v1.mp4")
+                        if _vf:
+                            _drive_video_exists = True
+                except Exception as e:
+                    logger.warning("Resume Drive動画チェック失敗: %s", e)
             video_record = None
-            if existing_video_files:
-                video_path = existing_video_files[-1]
-                version = video_path.stem
+            if existing_video_files or _drive_video_exists:
+                if existing_video_files:
+                    video_path = existing_video_files[-1]
+                    version = video_path.stem
+                else:
+                    video_path = None
+                    version = "v1"
                 effect = "zoom"
                 model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
                 video_record = {
-                    "version": video_path.stem, "effect": effect, "model": model,
+                    "version": version, "effect": effect, "model": model,
                     "memo": "既存動画を再利用", "prompt_extra": "", "created_at": now_iso(),
-                    "video_path": str(video_path),
-                    "video_url": f"/files/{asin}/videos/{video_path.name}",
+                    "video_path": str(video_path) if video_path else "",
+                    "video_url": f"/files/{asin}/videos/{video_path.name}" if video_path else "",
                 }
-                yield emit({"type": "step_skip", "index": idx, "step": 5, "name": "動画生成", "reason": f"既存の動画を使用（{len(existing_video_files)}本）。再生成はレビュー画面から行えます"})
+                skip_count = len(existing_video_files) if existing_video_files else 1
+                yield emit({"type": "step_skip", "index": idx, "step": 5, "name": "動画生成", "reason": f"既存の動画を使用（{skip_count}本）。再生成はレビュー画面から行えます"})
             else:
                 effect = "zoom"
                 model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
