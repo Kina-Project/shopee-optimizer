@@ -2424,77 +2424,85 @@ async def restart_from_step(request: Request):
         # --- Step 4: 画像テキスト英語化（1枚ずつ進捗報告） ---
         if from_step <= 4:
             if openai_key:
-                total_images = len(image_paths)
-                est_per_image = 45
-                est = f"約{total_images * est_per_image}秒（{total_images}枚）"
-                yield emit({"type": "step", "index": 0, "step": 4, "total": total, "name": "画像テキスト英語化", "est": est})
-
+                # 既存の翻訳画像があればスキップ（API費節約）
                 en_dir = output_dir / "images_en"
-                en_dir.mkdir(exist_ok=True)
-                translated_image_paths = []
-                consecutive_failures = 0
-                max_consecutive_failures = 2
-                step4_start = time.time()
+                existing_en_files = sorted(en_dir.glob("*_en.png")) if en_dir.exists() else []
+                if existing_en_files:
+                    translated_image_paths = [str(p) for p in existing_en_files]
+                    translated_image_urls = [f"/files/{asin}/images_en/{p.name}" for p in existing_en_files]
+                    yield emit({"type": "step_skip", "index": 0, "step": 4, "name": "画像テキスト英語化", "reason": f"既存の翻訳画像を使用（{len(existing_en_files)}枚）。再翻訳はレビュー画面から行えます"})
+                    yield emit({"type": "step_done", "index": 0, "step": 4, "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}})
+                else:
+                    total_images = len(image_paths)
+                    est_per_image = 45
+                    est = f"約{total_images * est_per_image}秒（{total_images}枚）"
+                    yield emit({"type": "step", "index": 0, "step": 4, "total": total, "name": "画像テキスト英語化", "est": est})
 
-                for img_i, img_path in enumerate(image_paths):
-                    out_path = en_dir / f"{Path(img_path).stem}_en.png"
-                    if not has_japanese_text(openai_key, str(img_path)):
-                        logger.info("テキストなし、翻訳スキップ: %s", Path(img_path).name)
-                        shutil.copy2(str(img_path), str(out_path))
-                        translated_image_paths.append(str(out_path))
-                        consecutive_failures = 0
+                    en_dir.mkdir(exist_ok=True)
+                    translated_image_paths = []
+                    consecutive_failures = 0
+                    max_consecutive_failures = 2
+                    step4_start = time.time()
+
+                    for img_i, img_path in enumerate(image_paths):
+                        out_path = en_dir / f"{Path(img_path).stem}_en.png"
+                        if not has_japanese_text(openai_key, str(img_path)):
+                            logger.info("テキストなし、翻訳スキップ: %s", Path(img_path).name)
+                            shutil.copy2(str(img_path), str(out_path))
+                            translated_image_paths.append(str(out_path))
+                            consecutive_failures = 0
+                            elapsed = time.time() - step4_start
+                            completed = img_i + 1
+                            yield emit({"type": "step_progress", "index": 0, "step": 4, "completed": completed, "total_items": total_images, "elapsed_sec": round(elapsed, 1), "est_remaining_sec": 0})
+                            continue
+                        try:
+                            success = translate_image_text(openai_key, str(img_path), str(out_path), product)
+                        except QuotaExhaustedError as e:
+                            yield emit({"type": "quota_exhausted", "index": 0, "step": 4, "service": e.service, "message": str(e)})
+                            return
+                        except Exception as e:
+                            logger.warning("画像翻訳エラー (%s): %s", img_path, e)
+                            success = False
+
+                        if success:
+                            translated_image_paths.append(str(out_path))
+                            consecutive_failures = 0
+                        else:
+                            consecutive_failures += 1
+                            if consecutive_failures >= max_consecutive_failures:
+                                logger.warning("画像翻訳が%d回連続失敗。残り%d枚をスキップ", max_consecutive_failures, total_images - img_i - 1)
+                                yield emit({"type": "step_warn", "index": 0, "step": 4, "message": f"画像翻訳が{max_consecutive_failures}回連続失敗。残り{total_images - img_i - 1}枚をスキップしました。"})
+                                break
+
                         elapsed = time.time() - step4_start
                         completed = img_i + 1
-                        yield emit({"type": "step_progress", "index": 0, "step": 4, "completed": completed, "total_items": total_images, "elapsed_sec": round(elapsed, 1), "est_remaining_sec": 0})
-                        continue
-                    try:
-                        success = translate_image_text(openai_key, str(img_path), str(out_path), product)
-                    except QuotaExhaustedError as e:
-                        yield emit({"type": "quota_exhausted", "index": 0, "step": 4, "service": e.service, "message": str(e)})
-                        return
-                    except Exception as e:
-                        logger.warning("画像翻訳エラー (%s): %s", img_path, e)
-                        success = False
+                        if len(translated_image_paths) > 0:
+                            avg_per_image = elapsed / completed
+                            est_remaining = avg_per_image * (total_images - completed)
+                        else:
+                            est_remaining = est_per_image * (total_images - completed)
+                        yield emit({
+                            "type": "step_progress", "index": 0, "step": 4,
+                            "completed": completed, "total_items": total_images,
+                            "elapsed_sec": round(elapsed, 1),
+                            "est_remaining_sec": round(max(0, est_remaining), 1),
+                        })
 
-                    if success:
-                        translated_image_paths.append(str(out_path))
-                        consecutive_failures = 0
-                    else:
-                        consecutive_failures += 1
-                        if consecutive_failures >= max_consecutive_failures:
-                            logger.warning("画像翻訳が%d回連続失敗。残り%d枚をスキップ", max_consecutive_failures, total_images - img_i - 1)
-                            yield emit({"type": "step_warn", "index": 0, "step": 4, "message": f"画像翻訳が{max_consecutive_failures}回連続失敗。残り{total_images - img_i - 1}枚をスキップしました。"})
-                            break
-
-                    elapsed = time.time() - step4_start
-                    completed = img_i + 1
-                    if len(translated_image_paths) > 0:
-                        avg_per_image = elapsed / completed
-                        est_remaining = avg_per_image * (total_images - completed)
-                    else:
-                        est_remaining = est_per_image * (total_images - completed)
+                    translated_image_urls = [f"/files/{asin}/images_en/{Path(p).name}" for p in translated_image_paths]
                     yield emit({
-                        "type": "step_progress", "index": 0, "step": 4,
-                        "completed": completed, "total_items": total_images,
-                        "elapsed_sec": round(elapsed, 1),
-                        "est_remaining_sec": round(max(0, est_remaining), 1),
+                        "type": "step_done", "index": 0, "step": 4,
+                        "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}
                     })
-
-                translated_image_urls = [f"/files/{asin}/images_en/{Path(p).name}" for p in translated_image_paths]
-                yield emit({
-                    "type": "step_done", "index": 0, "step": 4,
-                    "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}
-                })
-                checkpoint_err = write_step_checkpoint(
-                    url,
-                    product,
-                    len(image_paths),
-                    product_state.get("drive_folder_url", ""),
-                    config,
-                    "Step4完了: 画像テキスト英語化",
-                )
-                if checkpoint_err:
-                    yield emit({"type": "step_warn", "index": 0, "step": 4, "message": f"シート中間記録エラー: {checkpoint_err}"})
+                    checkpoint_err = write_step_checkpoint(
+                        url,
+                        product,
+                        len(image_paths),
+                        product_state.get("drive_folder_url", ""),
+                        config,
+                        "Step4完了: 画像テキスト英語化",
+                    )
+                    if checkpoint_err:
+                        yield emit({"type": "step_warn", "index": 0, "step": 4, "message": f"シート中間記録エラー: {checkpoint_err}"})
             else:
                 yield emit({"type": "step_skip", "index": 0, "step": 4, "name": "画像テキスト英語化", "reason": "OpenAIキー未設定"})
 
@@ -2502,37 +2510,44 @@ async def restart_from_step(request: Request):
         video_record = None
         if from_step <= 5:
             existing_videos = product_state.get("videos", [])
-            version = next_video_version(existing_videos)
-            model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
-            video_path = videos_dir / f"{version}.mp4"
 
-            yield emit({"type": "step", "index": 0, "step": 5, "total": total, "name": "動画生成", "est": "30〜120秒"})
-            try:
-                out = generate_video(image_paths, product, output_dir, config=config, effect=effect, output_path=video_path)
-                video_path = Path(out) if out else None
-            except QuotaExhaustedError as e:
-                video_path = None
-                yield emit({"type": "quota_exhausted", "index": 0, "step": 5, "service": e.service, "message": str(e)})
-                return
-            except Exception as e:
-                video_path = None
-                yield emit({"type": "step_warn", "index": 0, "step": 5, "message": f"動画生成失敗: {e}"})
+            # 既存の動画がある場合はスキップ（API費節約）
+            existing_video_files = sorted(videos_dir.glob("*.mp4")) if videos_dir.exists() else []
+            if existing_video_files:
+                video_record = existing_videos[-1]
+                yield emit({"type": "step_skip", "index": 0, "step": 5, "name": "動画生成", "reason": f"既存の動画を使用（{len(existing_video_files)}本）。再生成はレビュー画面から行えます"})
+            else:
+                version = next_video_version(existing_videos)
+                model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
+                video_path = videos_dir / f"{version}.mp4"
 
-            if video_path and video_path.exists():
-                shutil.copy2(video_path, output_dir / "shopee_video.mp4")
-                video_record = {
-                    "version": version,
-                    "effect": effect,
-                    "model": model,
-                    "memo": "再開による再生成",
-                    "prompt_extra": "",
-                    "created_at": now_iso(),
-                    "video_path": str(video_path),
-                    "video_url": to_rel_video_url(asin, video_path),
-                    "drive_file_url": "",
-                    "source_image_path": str(image_paths[0]) if image_paths else "",
-                    "source_image_url": image_urls[0] if image_urls else "",
-                }
+                yield emit({"type": "step", "index": 0, "step": 5, "total": total, "name": "動画生成", "est": "30〜120秒"})
+                try:
+                    out = generate_video(image_paths, product, output_dir, config=config, effect=effect, output_path=video_path)
+                    video_path = Path(out) if out else None
+                except QuotaExhaustedError as e:
+                    video_path = None
+                    yield emit({"type": "quota_exhausted", "index": 0, "step": 5, "service": e.service, "message": str(e)})
+                    return
+                except Exception as e:
+                    video_path = None
+                    yield emit({"type": "step_warn", "index": 0, "step": 5, "message": f"動画生成失敗: {e}"})
+
+                if video_path and video_path.exists():
+                    shutil.copy2(video_path, output_dir / "shopee_video.mp4")
+                    video_record = {
+                        "version": version,
+                        "effect": effect,
+                        "model": model,
+                        "memo": "再開による再生成",
+                        "prompt_extra": "",
+                        "created_at": now_iso(),
+                        "video_path": str(video_path),
+                        "video_url": to_rel_video_url(asin, video_path),
+                        "drive_file_url": "",
+                        "source_image_path": str(image_paths[0]) if image_paths else "",
+                        "source_image_url": image_urls[0] if image_urls else "",
+                    }
 
             yield emit({
                 "type": "step_done", "index": 0, "step": 5,
@@ -2926,122 +2941,151 @@ async def process_stream(request: Request):
             # Step 4: 画像テキスト英語化 + 即座にDrive保存（1枚ずつ進捗報告）
             translated_image_paths = []
             if openai_key and not skip_image_translate:
-                total_images = len(image_paths)
-                est_per_image = 45  # 秒/枚
-                est = f"約{total_images * est_per_image}秒（{total_images}枚）"
-                yield emit({"type": "step", "index": idx, "step": 4, "total": total, "name": "画像テキスト英語化", "est": est})
-
+                # 既存の翻訳画像があればスキップ（API費節約）
                 en_dir = output_dir / "images_en"
-                en_dir.mkdir(exist_ok=True)
-                consecutive_failures = 0
-                max_consecutive_failures = 2
-                step4_start = time.time()
+                existing_en_files = sorted(en_dir.glob("*_en.png")) if en_dir.exists() else []
+                if existing_en_files:
+                    translated_image_paths = [p for p in existing_en_files]
+                    translated_image_urls = [f"/files/{asin}/images_en/{p.name}" for p in existing_en_files]
+                    yield emit({"type": "step_skip", "index": idx, "step": 4, "name": "画像テキスト英語化", "reason": f"既存の翻訳画像を使用（{len(existing_en_files)}枚）。再翻訳はレビュー画面から行えます"})
+                    yield emit({"type": "step_done", "index": idx, "step": 4, "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}})
+                else:
+                    total_images = len(image_paths)
+                    est_per_image = 45  # 秒/枚
+                    est = f"約{total_images * est_per_image}秒（{total_images}枚）"
+                    yield emit({"type": "step", "index": idx, "step": 4, "total": total, "name": "画像テキスト英語化", "est": est})
 
-                for img_i, img_path in enumerate(image_paths):
-                    out_path = en_dir / f"{img_path.stem}_en.png"
-                    if not has_japanese_text(openai_key, str(img_path)):
-                        logger.info("テキストなし、翻訳スキップ: %s", Path(img_path).name)
-                        shutil.copy2(str(img_path), str(out_path))
-                        translated_image_paths.append(out_path)
-                        consecutive_failures = 0
+                    en_dir.mkdir(exist_ok=True)
+                    consecutive_failures = 0
+                    max_consecutive_failures = 2
+                    step4_start = time.time()
+
+                    for img_i, img_path in enumerate(image_paths):
+                        out_path = en_dir / f"{img_path.stem}_en.png"
+                        if not has_japanese_text(openai_key, str(img_path)):
+                            logger.info("テキストなし、翻訳スキップ: %s", Path(img_path).name)
+                            shutil.copy2(str(img_path), str(out_path))
+                            translated_image_paths.append(out_path)
+                            consecutive_failures = 0
+                            elapsed = time.time() - step4_start
+                            completed = img_i + 1
+                            yield emit({"type": "step_progress", "index": idx, "step": 4, "completed": completed, "total_items": total_images, "elapsed_sec": round(elapsed, 1), "est_remaining_sec": 0})
+                            continue
+                        try:
+                            success = translate_image_text(openai_key, str(img_path), str(out_path), product)
+                        except QuotaExhaustedError as e:
+                            yield emit({"type": "quota_exhausted", "index": idx, "step": 4, "service": e.service, "message": str(e)})
+                            remaining = len(urls) - idx - 1
+                            if remaining > 0:
+                                yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
+                            BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
+                            BATCH_STORE[batch_id]["stopped_at_index"] = idx
+                            BATCH_STORE[batch_id]["stopped_at_step"] = 4
+                            save_batch_state(batch_id)
+                            return
+                        except Exception as e:
+                            logger.warning("画像翻訳エラー (%s): %s", img_path, e)
+                            success = False
+
+                        if success:
+                            translated_image_paths.append(out_path)
+                            consecutive_failures = 0
+                        else:
+                            consecutive_failures += 1
+                            if consecutive_failures >= max_consecutive_failures:
+                                logger.warning("画像翻訳が%d回連続失敗。残り%d枚をスキップ", max_consecutive_failures, total_images - img_i - 1)
+                                yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"画像翻訳が{max_consecutive_failures}回連続失敗。残り{total_images - img_i - 1}枚をスキップしました。"})
+                                break
+
+                        # 1枚完了ごとに進捗報告
                         elapsed = time.time() - step4_start
                         completed = img_i + 1
-                        yield emit({"type": "step_progress", "index": idx, "step": 4, "completed": completed, "total_items": total_images, "elapsed_sec": round(elapsed, 1), "est_remaining_sec": 0})
-                        continue
-                    try:
-                        success = translate_image_text(openai_key, str(img_path), str(out_path), product)
-                    except QuotaExhaustedError as e:
-                        yield emit({"type": "quota_exhausted", "index": idx, "step": 4, "service": e.service, "message": str(e)})
-                        remaining = len(urls) - idx - 1
-                        if remaining > 0:
-                            yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
-                        BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
-                        BATCH_STORE[batch_id]["stopped_at_index"] = idx
-                        BATCH_STORE[batch_id]["stopped_at_step"] = 4
-                        save_batch_state(batch_id)
-                        return
-                    except Exception as e:
-                        logger.warning("画像翻訳エラー (%s): %s", img_path, e)
-                        success = False
+                        if len(translated_image_paths) > 0:
+                            avg_per_image = elapsed / completed
+                            est_remaining = avg_per_image * (total_images - completed)
+                        else:
+                            est_remaining = est_per_image * (total_images - completed)
+                        yield emit({
+                            "type": "step_progress", "index": idx, "step": 4,
+                            "completed": completed, "total_items": total_images,
+                            "elapsed_sec": round(elapsed, 1),
+                            "est_remaining_sec": round(max(0, est_remaining), 1),
+                        })
 
-                    if success:
-                        translated_image_paths.append(out_path)
-                        consecutive_failures = 0
-                    else:
-                        consecutive_failures += 1
-                        if consecutive_failures >= max_consecutive_failures:
-                            logger.warning("画像翻訳が%d回連続失敗。残り%d枚をスキップ", max_consecutive_failures, total_images - img_i - 1)
-                            yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"画像翻訳が{max_consecutive_failures}回連続失敗。残り{total_images - img_i - 1}枚をスキップしました。"})
-                            break
+                    # 翻訳画像を即座にDriveへ保存
+                    if drive_obj and folder_id and translated_image_paths:
+                        try:
+                            upload_translated_images_to_drive(drive_obj, translated_image_paths, folder_id)
+                            logger.info("Step4: 翻訳画像%d枚をDriveに保存完了", len(translated_image_paths))
+                        except Exception as e:
+                            logger.warning("Step4 Drive保存失敗: %s", e)
+                            yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"翻訳画像のDrive保存失敗: {e}"})
 
-                    # 1枚完了ごとに進捗報告
-                    elapsed = time.time() - step4_start
-                    completed = img_i + 1
-                    if len(translated_image_paths) > 0:
-                        avg_per_image = elapsed / completed
-                        est_remaining = avg_per_image * (total_images - completed)
-                    else:
-                        est_remaining = est_per_image * (total_images - completed)
+                    translated_image_urls = [f"/files/{asin}/images_en/{Path(p).name}" for p in translated_image_paths]
                     yield emit({
-                        "type": "step_progress", "index": idx, "step": 4,
-                        "completed": completed, "total_items": total_images,
-                        "elapsed_sec": round(elapsed, 1),
-                        "est_remaining_sec": round(max(0, est_remaining), 1),
+                        "type": "step_done", "index": idx, "step": 4,
+                        "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}
                     })
-
-                # 翻訳画像を即座にDriveへ保存
-                if drive_obj and folder_id and translated_image_paths:
-                    try:
-                        upload_translated_images_to_drive(drive_obj, translated_image_paths, folder_id)
-                        logger.info("Step4: 翻訳画像%d枚をDriveに保存完了", len(translated_image_paths))
-                    except Exception as e:
-                        logger.warning("Step4 Drive保存失敗: %s", e)
-                        yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"翻訳画像のDrive保存失敗: {e}"})
-
-                translated_image_urls = [f"/files/{asin}/images_en/{Path(p).name}" for p in translated_image_paths]
-                yield emit({
-                    "type": "step_done", "index": idx, "step": 4,
-                    "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}
-                })
-                checkpoint_err = write_step_checkpoint(
-                    url,
-                    product,
-                    image_count,
-                    folder_url,
-                    config,
-                    "Step4完了: 画像テキスト英語化",
-                )
-                if checkpoint_err:
-                    yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"シート中間記録エラー: {checkpoint_err}"})
+                    checkpoint_err = write_step_checkpoint(
+                        url,
+                        product,
+                        image_count,
+                        folder_url,
+                        config,
+                        "Step4完了: 画像テキスト英語化",
+                    )
+                    if checkpoint_err:
+                        yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"シート中間記録エラー: {checkpoint_err}"})
             else:
                 yield emit({"type": "step_skip", "index": idx, "step": 4, "name": "画像テキスト英語化", "reason": "OpenAIキー未設定またはスキップ指定"})
 
             # Step 5: 動画生成 + 即座にDrive保存
-            effect = "zoom"
-            model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
-            version = "v1"
-            video_path = videos_dir / f"{version}.mp4"
+            # 既存の動画があればスキップ（API費節約）
+            existing_video_files = sorted(videos_dir.glob("*.mp4")) if videos_dir.exists() else []
+            if existing_video_files:
+                video_path = existing_video_files[-1]
+                effect = "zoom"
+                model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
+                video_record = {
+                    "version": video_path.stem,
+                    "effect": effect,
+                    "model": model,
+                    "memo": "既存動画を再利用",
+                    "prompt_extra": "",
+                    "created_at": now_iso(),
+                    "video_path": str(video_path),
+                    "video_url": to_rel_video_url(asin, video_path),
+                    "drive_file_url": "",
+                    "source_image_path": str(image_paths[0]) if image_paths else "",
+                    "source_image_url": image_urls[0] if image_urls else "",
+                }
+                yield emit({"type": "step_skip", "index": idx, "step": 5, "name": "動画生成", "reason": f"既存の動画を使用（{len(existing_video_files)}本）。再生成はレビュー画面から行えます"})
+            else:
+                effect = "zoom"
+                model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
+                version = "v1"
+                video_path = videos_dir / f"{version}.mp4"
 
-            yield emit({"type": "step", "index": idx, "step": 5, "total": total, "name": "動画生成", "est": "30〜120秒"})
-            try:
-                out = generate_video(image_paths, product, output_dir, config=config, effect=effect, output_path=video_path)
-                video_path = Path(out) if out else None
-                if video_path and video_path.exists():
-                    shutil.copy2(video_path, output_dir / "shopee_video.mp4")
-            except QuotaExhaustedError as e:
-                video_path = None
-                yield emit({"type": "quota_exhausted", "index": idx, "step": 5, "service": e.service, "message": str(e)})
-                remaining = len(urls) - idx - 1
-                if remaining > 0:
-                    yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
-                BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
-                BATCH_STORE[batch_id]["stopped_at_index"] = idx
-                BATCH_STORE[batch_id]["stopped_at_step"] = 5
-                save_batch_state(batch_id)
-                return
-            except Exception as e:
-                video_path = None
-                yield emit({"type": "step_warn", "index": idx, "step": 5, "message": f"動画生成失敗: {e}"})
+                yield emit({"type": "step", "index": idx, "step": 5, "total": total, "name": "動画生成", "est": "30〜120秒"})
+                try:
+                    out = generate_video(image_paths, product, output_dir, config=config, effect=effect, output_path=video_path)
+                    video_path = Path(out) if out else None
+                    if video_path and video_path.exists():
+                        shutil.copy2(video_path, output_dir / "shopee_video.mp4")
+                except QuotaExhaustedError as e:
+                    video_path = None
+                    yield emit({"type": "quota_exhausted", "index": idx, "step": 5, "service": e.service, "message": str(e)})
+                    remaining = len(urls) - idx - 1
+                    if remaining > 0:
+                        yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
+                    BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
+                    BATCH_STORE[batch_id]["stopped_at_index"] = idx
+                    BATCH_STORE[batch_id]["stopped_at_step"] = 5
+                    save_batch_state(batch_id)
+                    return
+                except Exception as e:
+                    video_path = None
+                    yield emit({"type": "step_warn", "index": idx, "step": 5, "message": f"動画生成失敗: {e}"})
 
             video_record = None
             if video_path and video_path.exists():
@@ -3403,125 +3447,147 @@ async def resume_batch(batch_id: str):
             # Step 4: 画像テキスト英語化
             translated_image_paths = []
             if openai_key and not skip_image_translate:
-                total_images = len(image_paths)
-                est_per_image = 45
-                est = f"約{total_images * est_per_image}秒（{total_images}枚）"
-                yield emit({"type": "step", "index": idx, "step": 4, "total": total, "name": "画像テキスト英語化", "est": est})
-
+                # 既存の翻訳画像があればスキップ（API費節約）
                 en_dir = output_dir / "images_en"
-                en_dir.mkdir(exist_ok=True)
-                consecutive_failures = 0
-                max_consecutive_failures = 2
-                step4_start = time.time()
+                existing_en_files = sorted(en_dir.glob("*_en.png")) if en_dir.exists() else []
+                if existing_en_files:
+                    translated_image_paths = [p for p in existing_en_files]
+                    translated_image_urls = [f"/files/{asin}/images_en/{p.name}" for p in existing_en_files]
+                    yield emit({"type": "step_skip", "index": idx, "step": 4, "name": "画像テキスト英語化", "reason": f"既存の翻訳画像を使用（{len(existing_en_files)}枚）。再翻訳はレビュー画面から行えます"})
+                    yield emit({"type": "step_done", "index": idx, "step": 4, "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}})
+                else:
+                    total_images = len(image_paths)
+                    est_per_image = 45
+                    est = f"約{total_images * est_per_image}秒（{total_images}枚）"
+                    yield emit({"type": "step", "index": idx, "step": 4, "total": total, "name": "画像テキスト英語化", "est": est})
 
-                for img_i, img_path in enumerate(image_paths):
-                    out_path = en_dir / f"{img_path.stem}_en.png"
-                    if not has_japanese_text(openai_key, str(img_path)):
-                        logger.info("テキストなし、翻訳スキップ: %s", Path(img_path).name)
-                        shutil.copy2(str(img_path), str(out_path))
-                        translated_image_paths.append(out_path)
-                        consecutive_failures = 0
+                    en_dir.mkdir(exist_ok=True)
+                    consecutive_failures = 0
+                    max_consecutive_failures = 2
+                    step4_start = time.time()
+
+                    for img_i, img_path in enumerate(image_paths):
+                        out_path = en_dir / f"{img_path.stem}_en.png"
+                        if not has_japanese_text(openai_key, str(img_path)):
+                            logger.info("テキストなし、翻訳スキップ: %s", Path(img_path).name)
+                            shutil.copy2(str(img_path), str(out_path))
+                            translated_image_paths.append(out_path)
+                            consecutive_failures = 0
+                            elapsed = time.time() - step4_start
+                            completed = img_i + 1
+                            yield emit({"type": "step_progress", "index": idx, "step": 4, "completed": completed, "total_items": total_images, "elapsed_sec": round(elapsed, 1), "est_remaining_sec": 0})
+                            continue
+                        try:
+                            success = translate_image_text(openai_key, str(img_path), str(out_path), product)
+                        except QuotaExhaustedError as e:
+                            yield emit({"type": "quota_exhausted", "index": idx, "step": 4, "service": e.service, "message": str(e)})
+                            remaining = len(urls) - idx - 1
+                            if remaining > 0:
+                                yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
+                            BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
+                            BATCH_STORE[batch_id]["stopped_at_index"] = idx
+                            BATCH_STORE[batch_id]["stopped_at_step"] = 4
+                            save_batch_state(batch_id)
+                            return
+                        except Exception as e:
+                            logger.warning("画像翻訳エラー (%s): %s", img_path, e)
+                            success = False
+
+                        if success:
+                            translated_image_paths.append(out_path)
+                            consecutive_failures = 0
+                        else:
+                            consecutive_failures += 1
+                            if consecutive_failures >= max_consecutive_failures:
+                                yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"画像翻訳が{max_consecutive_failures}回連続失敗。残り{total_images - img_i - 1}枚をスキップしました。"})
+                                break
+
                         elapsed = time.time() - step4_start
                         completed = img_i + 1
-                        yield emit({"type": "step_progress", "index": idx, "step": 4, "completed": completed, "total_items": total_images, "elapsed_sec": round(elapsed, 1), "est_remaining_sec": 0})
-                        continue
-                    try:
-                        success = translate_image_text(openai_key, str(img_path), str(out_path), product)
-                    except QuotaExhaustedError as e:
-                        yield emit({"type": "quota_exhausted", "index": idx, "step": 4, "service": e.service, "message": str(e)})
-                        remaining = len(urls) - idx - 1
-                        if remaining > 0:
-                            yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
-                        BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
-                        BATCH_STORE[batch_id]["stopped_at_index"] = idx
-                        BATCH_STORE[batch_id]["stopped_at_step"] = 4
-                        save_batch_state(batch_id)
-                        return
-                    except Exception as e:
-                        logger.warning("画像翻訳エラー (%s): %s", img_path, e)
-                        success = False
+                        avg = elapsed / completed if translated_image_paths else est_per_image
+                        est_remaining = avg * (total_images - completed)
+                        yield emit({"type": "step_progress", "index": idx, "step": 4, "completed": completed, "total_items": total_images, "elapsed_sec": round(elapsed, 1), "est_remaining_sec": round(max(0, est_remaining), 1)})
 
-                    if success:
-                        translated_image_paths.append(out_path)
-                        consecutive_failures = 0
-                    else:
-                        consecutive_failures += 1
-                        if consecutive_failures >= max_consecutive_failures:
-                            yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"画像翻訳が{max_consecutive_failures}回連続失敗。残り{total_images - img_i - 1}枚をスキップしました。"})
-                            break
+                    if drive_obj and folder_id and translated_image_paths:
+                        try:
+                            upload_translated_images_to_drive(drive_obj, translated_image_paths, folder_id)
+                            logger.info("Resume Step4: 翻訳画像%d枚をDriveに保存完了", len(translated_image_paths))
+                        except Exception as e:
+                            logger.warning("Resume Step4 Drive保存失敗: %s", e)
 
-                    elapsed = time.time() - step4_start
-                    completed = img_i + 1
-                    avg = elapsed / completed if translated_image_paths else est_per_image
-                    est_remaining = avg * (total_images - completed)
-                    yield emit({"type": "step_progress", "index": idx, "step": 4, "completed": completed, "total_items": total_images, "elapsed_sec": round(elapsed, 1), "est_remaining_sec": round(max(0, est_remaining), 1)})
-
-                if drive_obj and folder_id and translated_image_paths:
-                    try:
-                        upload_translated_images_to_drive(drive_obj, translated_image_paths, folder_id)
-                        logger.info("Resume Step4: 翻訳画像%d枚をDriveに保存完了", len(translated_image_paths))
-                    except Exception as e:
-                        logger.warning("Resume Step4 Drive保存失敗: %s", e)
-
-                translated_image_urls = [f"/files/{asin}/images_en/{Path(p).name}" for p in translated_image_paths]
-                yield emit({"type": "step_done", "index": idx, "step": 4, "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}})
-                checkpoint_err = write_step_checkpoint(
-                    url,
-                    product,
-                    image_count,
-                    folder_url,
-                    config,
-                    "Step4完了: 画像テキスト英語化",
-                )
-                if checkpoint_err:
-                    yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"シート中間記録エラー: {checkpoint_err}"})
+                    translated_image_urls = [f"/files/{asin}/images_en/{Path(p).name}" for p in translated_image_paths]
+                    yield emit({"type": "step_done", "index": idx, "step": 4, "data": {"translated_count": len(translated_image_paths), "translated_image_urls": translated_image_urls}})
+                    checkpoint_err = write_step_checkpoint(
+                        url,
+                        product,
+                        image_count,
+                        folder_url,
+                        config,
+                        "Step4完了: 画像テキスト英語化",
+                    )
+                    if checkpoint_err:
+                        yield emit({"type": "step_warn", "index": idx, "step": 4, "message": f"シート中間記録エラー: {checkpoint_err}"})
             else:
                 yield emit({"type": "step_skip", "index": idx, "step": 4, "name": "画像テキスト英語化", "reason": "OpenAIキー未設定またはスキップ指定"})
 
             # Step 5: 動画生成
-            effect = "zoom"
-            model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
-            version = "v1"
-            video_path = videos_dir / f"{version}.mp4"
-
-            yield emit({"type": "step", "index": idx, "step": 5, "total": total, "name": "動画生成", "est": "30〜120秒"})
-            try:
-                out = generate_video(image_paths, product, output_dir, config=config, effect=effect, output_path=video_path)
-                video_path = Path(out) if out else None
-                if video_path and video_path.exists():
-                    shutil.copy2(video_path, output_dir / "shopee_video.mp4")
-            except QuotaExhaustedError as e:
-                video_path = None
-                yield emit({"type": "quota_exhausted", "index": idx, "step": 5, "service": e.service, "message": str(e)})
-                remaining = len(urls) - idx - 1
-                if remaining > 0:
-                    yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
-                BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
-                BATCH_STORE[batch_id]["stopped_at_index"] = idx
-                BATCH_STORE[batch_id]["stopped_at_step"] = 5
-                save_batch_state(batch_id)
-                return
-            except Exception as e:
-                video_path = None
-                yield emit({"type": "step_warn", "index": idx, "step": 5, "message": f"動画生成失敗: {e}"})
-
+            # 既存の動画があればスキップ（API費節約）
+            existing_video_files = sorted(videos_dir.glob("*.mp4")) if videos_dir.exists() else []
             video_record = None
-            if video_path and video_path.exists():
+            if existing_video_files:
+                video_path = existing_video_files[-1]
+                effect = "zoom"
+                model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
                 video_record = {
-                    "version": version, "effect": effect, "model": model,
-                    "memo": "", "prompt_extra": "", "created_at": now_iso(),
+                    "version": video_path.stem, "effect": effect, "model": model,
+                    "memo": "既存動画を再利用", "prompt_extra": "", "created_at": now_iso(),
                     "video_path": str(video_path),
                     "video_url": f"/files/{asin}/videos/{video_path.name}",
                 }
+                yield emit({"type": "step_skip", "index": idx, "step": 5, "name": "動画生成", "reason": f"既存の動画を使用（{len(existing_video_files)}本）。再生成はレビュー画面から行えます"})
+            else:
+                effect = "zoom"
+                model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
+                version = "v1"
+                video_path = videos_dir / f"{version}.mp4"
 
-            if drive_obj and folder_id and video_path and video_path.exists():
+                yield emit({"type": "step", "index": idx, "step": 5, "total": total, "name": "動画生成", "est": "30〜120秒"})
                 try:
-                    video_item = upload_video_to_drive(drive_obj, video_path, folder_id)
-                    if video_item and video_record:
-                        video_record["drive_file_url"] = video_item.get("webViewLink", "")
-                    logger.info("Resume Step5: 動画をDriveに保存完了")
+                    out = generate_video(image_paths, product, output_dir, config=config, effect=effect, output_path=video_path)
+                    video_path = Path(out) if out else None
+                    if video_path and video_path.exists():
+                        shutil.copy2(video_path, output_dir / "shopee_video.mp4")
+                except QuotaExhaustedError as e:
+                    video_path = None
+                    yield emit({"type": "quota_exhausted", "index": idx, "step": 5, "service": e.service, "message": str(e)})
+                    remaining = len(urls) - idx - 1
+                    if remaining > 0:
+                        yield emit({"type": "batch_stopped", "message": f"API残高不足のため、残り{remaining}件の処理を中止しました。チャージ後に再開してください。", "stopped_at_index": idx, "remaining_count": remaining})
+                    BATCH_STORE[batch_id]["stopped_reason"] = f"{e.service}_quota_exhausted"
+                    BATCH_STORE[batch_id]["stopped_at_index"] = idx
+                    BATCH_STORE[batch_id]["stopped_at_step"] = 5
+                    save_batch_state(batch_id)
+                    return
                 except Exception as e:
-                    logger.warning("Resume Step5 Drive保存失敗: %s", e)
+                    video_path = None
+                    yield emit({"type": "step_warn", "index": idx, "step": 5, "message": f"動画生成失敗: {e}"})
+
+                if video_path and video_path.exists():
+                    video_record = {
+                        "version": version, "effect": effect, "model": model,
+                        "memo": "", "prompt_extra": "", "created_at": now_iso(),
+                        "video_path": str(video_path),
+                        "video_url": f"/files/{asin}/videos/{video_path.name}",
+                    }
+
+                if drive_obj and folder_id and video_path and video_path.exists():
+                    try:
+                        video_item = upload_video_to_drive(drive_obj, video_path, folder_id)
+                        if video_item and video_record:
+                            video_record["drive_file_url"] = video_item.get("webViewLink", "")
+                        logger.info("Resume Step5: 動画をDriveに保存完了")
+                    except Exception as e:
+                        logger.warning("Resume Step5 Drive保存失敗: %s", e)
             yield emit({
                 "type": "step_done", "index": idx, "step": 5,
                 "data": {"video_url": video_record["video_url"] if video_record else None}

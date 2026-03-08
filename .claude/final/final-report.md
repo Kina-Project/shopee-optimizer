@@ -1,114 +1,139 @@
-# フルパイプライン品質評価 最終レポート
+# Shopee Optimizer - フルパイプライン品質評価 最終レポート
 
-**実施日:** 2026-03-05
-**対象:** https://github.com/Mana0612/shopee-optimizer.git
-**手法:** 8エージェント並列レビュー → 評価集計 → 修正実装
-
----
-
-## Before/After 比較サマリ
-
-| 軸 | 配点 | Before | After | 改善内容 |
-|---|---|---|---|---|
-| 機能性 | 25 | 15 | 19 | durationバグ修正、メイン画像順序保証、regenerate Null安全化 |
-| UX/使いやすさ | 20 | 10 | 12 | SSE JSON.parse安全化、エラーメッセージ改善 |
-| セキュリティ | 20 | 5 | 10 | ASIN検証、セキュリティヘッダー、エラー情報漏洩防止、Docker非root化、スプレッドシートID除去 |
-| 保守性 | 20 | 10 | 12 | requirements上限バージョン指定、HEALTHCHECK追加 |
-| パフォーマンス | 15 | 7 | 8 | FAL_KEY race condition修正、ffprobeエラーハンドリング |
-| **合計** | **100** | **47** | **61** | +14点改善 |
+**評価日:** 2026-03-08
+**対象PR:** #17 (feat/per-step-spreadsheet-write)
+**評価チーム:** 8名（エンジニア5名 + ペルソナ3名）
 
 ---
 
-## 実施した修正一覧（17件）
+## 総合スコア: 45/100点 (閾値80点未達)
 
-### shopee_core.py（6件）
-
-| # | 修正 | なぜやったか | 結果 |
-|---|------|-------------|------|
-| 1 | **durationバグ修正** (L556-575) | `generate_video_ai`のduration処理で`model_config["params"].get("duration", duration)`が常にモデルデフォルト値を返し、引数のdurationが無視されていた。引き継ぎメモの「動画5秒→10秒拡大」が実現不可能だった | `duration=None`をデフォルトにし、明示指定時のみ上書きするよう修正。10秒動画生成が可能に |
-| 2 | **generate_videoにdurationパラメータ追加** (L591) | 外部からdurationを制御できなかった | generate_video → generate_video_ai にdurationが伝搬するようパイプライン貫通 |
-| 3 | **メイン画像を先頭に保証** (L196-206) | `fetch_amazon_product`で`images`配列の順序がAPI依存で、メイン画像が先頭にならないことがあった。引き継ぎメモの「メインの写真ではないもので動画生成される」バグの根本原因 | `main_image`を常に`image_urls[0]`に配置するロジック追加 |
-| 4 | **FAL_KEY race condition修正** (L614) | `os.environ["FAL_KEY"] = fal_key`でグローバル環境変数を書き換え。並行リクエストで競合 | 不要な環境変数書き換えを除去（FAL_KEYは起動時に設定済み） |
-| 5 | **ffprobeエラーハンドリング** (L416-425) | ffprobeの出力が空文字列の場合`float()`でValueError。ffprobe未インストールやタイムアウト時にクラッシュ | try-catchで安全にフォールバック（デフォルト10秒）、timeout=15追加 |
-| 6 | **スプレッドシートIDハードコード除去** (L44) | 本番スプレッドシートIDがソースコード内にデフォルト値として露出 | デフォルト値を空文字に変更（環境変数必須化） |
-
-### app.py（9件）
-
-| # | 修正 | なぜやったか | 結果 |
-|---|------|-------------|------|
-| 7 | **ASIN検証追加** (/files/{asin}/{path}) | パストラバーサル対策はあるが、asinパラメータ自体に`..`等の不正値を許容 | `^[A-Z0-9]{10}$`の正規表現チェック追加 |
-| 8 | **セキュリティヘッダーミドルウェア追加** | X-Content-Type-Options, X-Frame-Options, Referrer-Policyが未設定 | SecurityHeadersMiddleware追加 |
-| 9 | **エラーメッセージのサニタイズ**（Step1,2,3,6） | `str(e)`をそのままクライアントに返し、内部パス・APIキー・スタックトレースが漏洩する可能性 | ユーザー向け日本語メッセージに置換し、詳細はlogger.warningでサーバーログのみに記録 |
-| 10 | **regenerate-videoのNull安全化** | `generate_video`がNoneを返す場合`Path(None)`でTypeError | None時に適切なHTTPエラーレスポンスを返すよう修正 |
-| 11 | **regenerate-video Driveアップロードエラーのサニタイズ** | `str(e)`漏洩 | サーバーログに詳細、クライアントには汎用メッセージ |
-| 12 | **SSE JSON.parseにtry-catch追加** (フロントエンド) | 不正データ受信時にストリーム全体が停止 | parseエラーをcatchしてログ出力、ストリーム継続 |
-| 13 | **process-stream JSONパースのtry-catch追加** | 不正JSONで500エラー | 400 Bad Requestを返すよう修正 |
-| 14 | **ensure_drive_parent_folder_configのエラーサニタイズ** | 内部エラーメッセージ漏洩 | ユーザー向けメッセージに変更 |
-| 15 | **drive_parent_folder_idエラーのサニタイズ** | 設定不備のstr(e)漏洩 | 管理者に連絡する旨のメッセージに変更 |
-
-### Dockerfile（1件）
-
-| # | 修正 | なぜやったか | 結果 |
-|---|------|-------------|------|
-| 16 | **非rootユーザー実行 + HEALTHCHECK追加** | rootでコンテナ実行はセキュリティリスク。HEALTHCHECKなしでは異常検知が困難 | `appuser`ユーザー作成、`USER appuser`追加、curl導入、HEALTHCHECK設定 |
-
-### requirements.txt（1件）
-
-| # | 修正 | なぜやったか | 結果 |
-|---|------|-------------|------|
-| 17 | **バージョン上限追加** | `>=`のみで上限なし。メジャーバージョンアップで互換性破壊のリスク | 全パッケージに`<次メジャーバージョン`を追加 |
+| 評価軸 | 配点 | スコア | 主な根拠 |
+|--------|------|--------|----------|
+| 機能性 | 25 | 17 | 7ステップ処理は動作するが、resume時のAPIキー消失バグ、fal.aiタイムアウト未設定 |
+| UX/使いやすさ | 20 | 12 | 進捗表示は良好だが、専門用語多い、再開ボタン表示バグ、アクセシビリティ不足 |
+| セキュリティ | 20 | 4 | 認証ゼロ、OAuthシークレット平文、SSRF、XSS（playVideo） |
+| 保守性 | 20 | 7 | 3関数1120行コピペ、テストゼロ、ファイル3600行超 |
+| パフォーマンス | 15 | 5 | ブロッキングI/O、BATCH_STOREインメモリ、Cloud Runタイムアウト未設定 |
 
 ---
 
-## エージェント別スコア一覧
+## チーム別スコアサマリー
 
-| エージェント | 発見課題数 | 重要発見 |
-|---|---|---|
-| Senior Frontend | 22件 | label欠如、alert()多用、innerHTML XSSリスク、CSS重複 |
-| Senior Backend | 20件 | BATCH_STORE問題、同期I/Oブロック、レート制限なし |
-| DevOps Expert | 20件 | 認証ゼロ、CI/CDテストなし、root実行、バージョン未固定 |
-| QA Engineer | 28件 | durationバグ根本原因特定、メイン画像バグ原因特定 |
-| Security Auditor | 20件 | Critical 3件（認証/APIキー/CORS）、High 5件 |
-| Persona: 初心者 | 12件 | 専門用語多用、サービス説明なし、エラーUX問題 |
-| Persona: パワーユーザー | 10件 | 一括URL入力不可、ショートカットなし、エクスポートなし |
-| Persona: エンタープライズ | 18件 | RBAC/SSO/MFA/監査ログ全て未実装 |
-
----
-
-## 残存リスクと推奨対応
-
-### Critical（今回未対応 - 要人的判断）
-1. **認証・認可の導入** - アーキテクチャ判断が必要（Cloud IAP vs アプリ層APIキー vs OAuth2）
-2. **CORS設定** - デプロイ先ドメインが確定してから設定
-3. **APIキーのクライアント受信廃止** - フロントエンド設計変更を伴う
-4. **BATCH_STOREの外部永続化** - Firestore/Redis等の選定が必要
-
-### High（中期対応推奨）
-1. CI/CDパイプラインにテスト・リント・脆弱性スキャン追加
-2. 同期I/Oの非同期化（`asyncio.to_thread`またはタスクキュー）
-3. レート制限の実装
-4. 構造化ログ（JSON）への移行
-5. フロントエンドの外部ファイル分離
-
-### Medium（計画的対応）
-1. アクセシビリティ改善（label、ARIA属性）
-2. 専門用語の日本語化
-3. CSV/JSONエクスポート機能
-4. CSRF保護
-5. SSRF対策
+| チーム | スコア | 主要指摘 |
+|--------|--------|----------|
+| security-auditor | 6/20 | OAuthシークレット平文、認証欠如、SSRF |
+| senior-backend | 36/60 | BATCH_STOREインメモリ、3関数コピペ、ブロッキングI/O |
+| senior-frontend | 53/100 | progressPanelバグ、playVideo XSS、アクセシビリティ |
+| devops-expert | 38/100 | 認証なし公開、テストゲート皆無、タイムアウト未設定 |
+| qa-engineer | 36/100 | テストゼロ、fal.aiタイムアウトなし、APIキー引き継ぎ不能 |
+| persona-beginner | 59/140 | 専門用語、エラーメッセージに対策なし |
+| persona-poweruser | 68/100 | バッチ上限10件、キーボードショートカットなし |
+| persona-enterprise | 20/100 | 認証なし、監査ログなし、マルチテナント非対応 |
 
 ---
 
-## 次スプリント引き継ぎ事項
+## CRITICAL指摘一覧（必ず修正）
 
-1. **引き継ぎメモの既知バグ4件のうち2件の根本原因を修正済み**
-   - 「メインの写真ではないもので動画生成される」→ main_image先頭保証で修正
-   - 「動画生成5秒のみを10秒へ拡大」→ durationパラメータ貫通で修正
+| # | 指摘 | 報告元 | PR#17関連 |
+|---|------|--------|-----------|
+| C-1 | OAuthシークレット平文コミット（client_secret_*.json） | security | いいえ（既存） |
+| C-2 | 全エンドポイント認証なし | security, devops, enterprise | いいえ（既存） |
+| C-3 | BATCH_STOREインメモリ（マルチインスタンスで消失） | backend, qa | いいえ（既存） |
+| C-4 | テストカバレッジゼロ | qa | いいえ（既存） |
+| C-5 | fal_client.subscribeにタイムアウトなし（無限ハング） | qa | いいえ（既存） |
 
-2. **残り2件は設計変更が必要**
-   - 「動画確認が複数まとめて確認」→ 個別確定API追加が必要
-   - 「追加指示の再生成」→ Ken Burnsフォールバック時の対応が必要
+## HIGH指摘一覧（可能な限り修正）
 
-3. **修正はレビュー用コピー(`shopee-optimizer-review`)で実施**。元リポジトリは無傷。
+| # | 指摘 | 報告元 | PR#17関連 |
+|---|------|--------|-----------|
+| H-1 | playVideo() XSSリスク（innerHTML直接展開） | frontend | **はい（新規）** |
+| H-2 | バッチ再開ボタン表示バグ（progressPanel→productPanel） | frontend | いいえ（既存） |
+| H-3 | SSRFリスク（/add-imagesのURL未検証） | security | いいえ（既存） |
+| H-4 | resume_batch APIキー引き継ぎ不能 | qa | いいえ（既存） |
+| H-5 | process_stream/resume_batch/restart 3重コピペ1120行 | backend | いいえ（既存） |
+| H-6 | CI/CDにテストゲート皆無（push-to-prod状態） | devops | いいえ（既存） |
+| H-7 | Cloud Runタイムアウト未設定（動画生成が300秒超過） | devops | いいえ（既存） |
 
-4. **全修正内容はブランチ`fix/full-pipeline-review`に集約**。PRとして提出可能な状態。
+---
+
+## PR#17 マージ判定
+
+### 判定: 条件付きマージ可
+
+PR#17自体の変更（スプレッドシート中間保存、動画プレビュー、再生成UI）は機能的に正しく、
+既存の問題を悪化させるものではない。
+
+**マージ前に必須修正（PR#17で導入された問題）:**
+
+1. **H-1: playVideo() XSSリスク** — innerHTMLを使わずDOM APIで動画要素を生成する
+
+**マージ後に対応すべき既存課題（優先度順）:**
+
+1. C-1: client_secret_*.jsonを.gitignoreに追加 + git履歴からパージ + シークレットローテーション
+2. H-2: progressPanel → productPanel のID修正
+3. C-5: fal_client.subscribeにタイムアウト追加
+4. H-4: resume_batch APIキー引き継ぎ
+5. C-2: Cloud IAP or API Gateway認証の導入
+6. H-7: Cloud Runタイムアウト/メモリ/CPU設定の明示
+
+---
+
+## 改善ロードマップ
+
+### Phase 1: 即時対応（今回PR内）
+- [ ] playVideo() XSS修正
+
+### Phase 2: 短期（1-2週間）
+- [ ] client_secret.jsonの除去 + .gitignore
+- [ ] progressPanel IDバグ修正
+- [ ] fal_client タイムアウト追加
+- [ ] resume_batch APIキー引き継ぎ修正
+
+### Phase 3: 中期（2-4週間）
+- [ ] Cloud IAP認証導入
+- [ ] Cloud Run設定最適化（タイムアウト/メモリ/CPU）
+- [ ] CI/CDにテストゲート追加
+- [ ] 3関数コピペのリファクタリング
+
+### Phase 4: 長期（1-2ヶ月）
+- [ ] BATCH_STOREのFirestore移行
+- [ ] テスト基盤構築（80%カバレッジ目標）
+- [ ] 監査ログ実装
+- [ ] SSRF対策（URL allowlist）
+
+---
+
+## プロセス改善: consistency-checker エージェントの導入
+
+### 問題: 今回の評価サイクルで修正回数が多かった
+
+今回のPR #17では、マージ後に以下の追加修正が必要になった：
+
+| # | 修正内容 | 原因 |
+|---|---------|------|
+| 1 | playVideo() XSS修正 | チームレビューで検出 → 修正 |
+| 2 | Drive動画プレビュー不可 | DriveのURL形式が再生に不向き → プロキシ配信に変更 |
+| 3 | 履歴ページでローカル動画がない | Cloud Runエフェメラル前提の考慮漏れ |
+
+これらの修正は**1箇所を直すたびに、同じパターンの別箇所で同じ問題が残る**という連鎖を生みやすい。
+例えば `drive_file_url` の表示方法を履歴ページで修正しても、レビュー画面やバッチ結果画面では未修正のまま、という状態。
+
+### 対策: consistency-checker エージェントを新設
+
+**役割:** 1つの修正パターンが入ったとき、同じパターンを全コードベースでGrep検索し、修正漏れを洗い出す。
+
+**期待効果:**
+- 修正→テスト→別箇所発見→再修正 のループが減る
+- 3関数コピペ（process_stream / resume_batch / restart_from_step）間の不整合を早期検出
+- 1回のレビューサイクルで関連箇所を一括修正できる
+
+**具体例（今回のケースに当てはめると）:**
+- Drive動画URLをプロキシに変換する修正を入れた時点で
+- consistency-checkerが `drive_file_url` の全使用箇所を検索
+- 履歴ページ・レビュー画面・バッチ結果・動画生成ログなど全箇所をリスト化
+- 同じ修正が必要な箇所をMUST_FIXとして報告
+- → 1回の修正サイクルで全箇所対応完了
+
+**設置場所:** `~/.claude/agents/consistency-checker.md`
+**起動タイミング:** `/team` 実行時に他の8エージェントと並列起動（計9エージェント）
