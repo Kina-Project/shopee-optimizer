@@ -1629,7 +1629,17 @@ async function addSelectedImages(asin){
 
 async function finalizeBatch(){
   if(!currentBatchId){alert('batch_idがありません');return}
-  const products=reviewProducts.map(p=>({asin:p.asin, selected_version:p.selected_version||p.videos?.[0]?.version||'v1'}));
+  const products=reviewProducts.map(p=>({
+    asin:p.asin,
+    selected_version:p.selected_version||p.videos?.[0]?.version||'v1',
+    url:p.url||'',
+    product:p.product||{},
+    image_paths:p.image_paths||[],
+    drive_folder_url:p.drive_folder_url||'',
+    drive_folder_id:p.drive_folder_id||'',
+    videos:(p.videos||[]).map(v=>({version:v.version,effect:v.effect,model:v.model,drive_file_url:v.drive_file_url||''})),
+    finalized:p.finalized||false,
+  }));
   const res=await fetch('/finalize',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
@@ -3482,14 +3492,24 @@ async def finalize(request: Request):
     selections = data.get("products", [])
 
     batch = get_batch_or_none(batch_id)
-    if not batch:
-        raise HTTPException(status_code=404, detail="batch_idが見つかりません")
+
+    # バッチが見つからない場合、クライアントから送られたデータで処理
+    if batch:
+        results = batch["results"]
+    else:
+        logger.warning("finalize: batch %s not found, using client-provided data (%d products)", batch_id, len(selections))
+        if not selections:
+            raise HTTPException(status_code=400, detail="確定するデータがありません")
+        for s in selections:
+            if not isinstance(s.get("asin"), str) or not s.get("asin"):
+                raise HTTPException(status_code=400, detail="不正なproductデータです")
+        results = selections
 
     selection_map = {p.get("asin"): p.get("selected_version") for p in selections if p.get("asin")}
 
     finalized_count = 0
     config = get_config()
-    for product in batch["results"]:
+    for product in results:
         asin = product.get("asin", "")
         selected_version = selection_map.get(asin) or product.get("selected_version", "")
         if selected_version:
@@ -3535,14 +3555,15 @@ async def finalize(request: Request):
         except Exception as e:
             logger.warning("finalize failed for %s: %s", asin, e)
 
-    batch["updated_at"] = now_iso()
-    save_batch_state(batch_id)
+    if batch:
+        batch["updated_at"] = now_iso()
+        save_batch_state(batch_id)
 
     return JSONResponse({
         "ok": True,
         "batch_id": batch_id,
         "finalized_count": finalized_count,
-        "products": batch["results"],
+        "products": results,
     })
 
 
