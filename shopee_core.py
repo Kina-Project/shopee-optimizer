@@ -386,7 +386,7 @@ def _search_duckduckgo_images(query, num=10):
 def download_supplemental_images(image_urls, output_dir, start_index=0):
     """追加画像をダウンロード + 最低800px保証。既存のimagesフォルダに追記"""
     images_dir = Path(output_dir) / "images"
-    images_dir.mkdir(exist_ok=True)
+    images_dir.mkdir(parents=True, exist_ok=True)
     paths = []
     for i, url in enumerate(image_urls):
         idx = start_index + i + 1
@@ -596,7 +596,7 @@ def translate_image_text(openai_key, image_path, output_path, product):
 def translate_images(openai_key, image_paths, output_dir, product):
     """全画像のテキストを英語化。QuotaExhaustedErrorは呼び出し元へ伝播する。"""
     en_dir = output_dir / "images_en"
-    en_dir.mkdir(exist_ok=True)
+    en_dir.mkdir(parents=True, exist_ok=True)
 
     translated_paths = []
     consecutive_failures = 0

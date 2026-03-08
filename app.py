@@ -2181,9 +2181,9 @@ async def process_stream(request: Request):
             output_dir = output_base / asin
             output_dir.mkdir(parents=True, exist_ok=True)
             images_dir = output_dir / "images"
-            images_dir.mkdir(exist_ok=True)
+            images_dir.mkdir(parents=True, exist_ok=True)
             videos_dir = output_dir / "videos"
-            videos_dir.mkdir(exist_ok=True)
+            videos_dir.mkdir(parents=True, exist_ok=True)
 
             # Step 1完了後: Driveフォルダを事前作成
             try:
@@ -2313,7 +2313,7 @@ async def process_stream(request: Request):
                     est = f"約{total_images * est_per_image}秒（{total_images}枚）"
                     yield emit({"type": "step", "index": idx, "step": 4, "total": total, "name": "画像テキスト英語化", "est": est})
 
-                    en_dir.mkdir(exist_ok=True)
+                    en_dir.mkdir(parents=True, exist_ok=True)
                     consecutive_failures = 0
                     max_consecutive_failures = 2
                     step4_start = time.time()
@@ -2692,9 +2692,9 @@ async def resume_batch(batch_id: str):
             output_dir = Path(output_base) / asin
             output_dir.mkdir(parents=True, exist_ok=True)
             images_dir = output_dir / "images"
-            images_dir.mkdir(exist_ok=True)
+            images_dir.mkdir(parents=True, exist_ok=True)
             videos_dir = output_dir / "videos"
-            videos_dir.mkdir(exist_ok=True)
+            videos_dir.mkdir(parents=True, exist_ok=True)
 
             yield emit({
                 "type": "step_done", "index": idx, "step": 1,
@@ -2811,7 +2811,7 @@ async def resume_batch(batch_id: str):
                     est = f"約{total_images * est_per_image}秒（{total_images}枚）"
                     yield emit({"type": "step", "index": idx, "step": 4, "total": total, "name": "画像テキスト英語化", "est": est})
 
-                    en_dir.mkdir(exist_ok=True)
+                    en_dir.mkdir(parents=True, exist_ok=True)
                     consecutive_failures = 0
                     max_consecutive_failures = 2
                     step4_start = time.time()
