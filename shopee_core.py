@@ -995,7 +995,7 @@ def _find_existing_file(drive, parent_id, file_name):
     return files[0] if files else None
 
 
-def _upload_file_to_drive(drive, file_path, parent_id):
+def _upload_file_to_drive(drive, file_path, parent_id, force=False):
     from googleapiclient.http import MediaFileUpload
     name = Path(file_path).name
     suffix = Path(file_path).suffix.lower()
@@ -1005,27 +1005,15 @@ def _upload_file_to_drive(drive, file_path, parent_id):
         else "application/json" if suffix == ".json"
         else "video/mp4"
     )
+
+    # 同名ファイルが既に存在すればスキップ（force=Trueの場合は新規追加）
+    existing = _find_existing_file(drive, parent_id, name)
+    if existing and not force:
+        return existing
+
     file_size = Path(file_path).stat().st_size
-    # 5MB以上のファイルはresumableアップロード（動画向け）
     resumable = file_size > 5 * 1024 * 1024
     media = MediaFileUpload(str(file_path), mimetype=mime, resumable=resumable)
-
-    # 同名ファイルが既に存在すれば: 動画は上書き更新、画像はスキップ
-    existing = _find_existing_file(drive, parent_id, name)
-    if existing:
-        if suffix == ".mp4":
-            # 動画は再生成されるので上書き
-            def _do_update():
-                return drive.files().update(
-                    fileId=existing["id"],
-                    media_body=media,
-                    fields="id, webViewLink",
-                    supportsAllDrives=True,
-                ).execute()
-            return _drive_api_retry(_do_update)
-        else:
-            # 画像等はスキップして既存のメタデータを返す
-            return existing
 
     def _do_upload():
         return drive.files().create(
@@ -1163,11 +1151,11 @@ def upload_translated_images_to_drive(drive, translated_paths, folder_id):
         _upload_file_to_drive(drive, img, en_folder["id"])
 
 
-def upload_video_to_drive(drive, video_path, folder_id):
+def upload_video_to_drive(drive, video_path, folder_id, force=False):
     """動画をDriveフォルダへアップロード。アップロード結果を返す。"""
     if not video_path or not Path(video_path).exists():
         return {}
-    return _upload_file_to_drive(drive, video_path, folder_id)
+    return _upload_file_to_drive(drive, video_path, folder_id, force=force)
 
 
 def upload_to_drive(asin, image_paths, translated_paths, video_path, config=None, return_meta=False):
