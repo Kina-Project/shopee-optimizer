@@ -263,6 +263,36 @@ def _ensure_min_size(filepath, min_size=800):
         logger.warning("画像リサイズ失敗（スキップ）: %s - %s", filepath, e)
 
 
+def create_square_images(image_paths, output_dir, size=800):
+    """元画像を1:1の800×800に変換して images_square/ に保存。元画像はそのまま残す。"""
+    if not HAS_PIL:
+        logger.warning("Pillow未インストールのため正方形変換をスキップ")
+        return list(image_paths)
+    square_dir = Path(output_dir) / "images_square"
+    square_dir.mkdir(parents=True, exist_ok=True)
+    square_paths = []
+    for src in image_paths:
+        src = Path(src)
+        dst = square_dir / src.name
+        try:
+            with Image.open(src) as img:
+                img = img.convert("RGB")
+                w, h = img.size
+                # 中央クロップで正方形にする
+                side = min(w, h)
+                left = (w - side) // 2
+                top = (h - side) // 2
+                cropped = img.crop((left, top, left + side, top + side))
+                # 800×800にリサイズ
+                resized = cropped.resize((size, size), Image.LANCZOS)
+                resized.save(dst, quality=95)
+            square_paths.append(dst)
+        except Exception as e:
+            logger.warning("正方形変換失敗（元画像を使用）: %s - %s", src, e)
+            square_paths.append(src)
+    return square_paths
+
+
 def download_images(image_urls, output_dir):
     """画像をダウンロード + 最低800px保証"""
     paths = []
@@ -817,6 +847,17 @@ def generate_video(
     source_path = Path(source_image_path) if source_image_path else Path(image_paths[0])
     if not source_path.exists():
         source_path = Path(image_paths[0])
+
+    # 正方形画像を使用（アスペクト比エラー回避）
+    square_dir = Path(output_dir) / "images_square"
+    square_candidate = square_dir / source_path.name
+    if square_candidate.exists():
+        source_path = square_candidate
+    else:
+        # images_square がまだない場合はその場で生成
+        sq_paths = create_square_images([source_path], output_dir)
+        if sq_paths and Path(sq_paths[0]).exists():
+            source_path = Path(sq_paths[0])
 
     prompt = effect_config["prompt"]
     if prompt_suffix:

@@ -28,6 +28,7 @@ from shopee_core import (
     get_folder_first_image_thumbnail,
     extract_asin,
     fetch_amazon_product,
+    create_square_images,
     download_images,
     translate_product,
     translate_images,
@@ -2244,6 +2245,8 @@ async def process_stream(request: Request):
             yield emit({"type": "step", "index": idx, "step": 2, "total": total, "name": "画像ダウンロード", "est": "3秒"})
             try:
                 image_paths = download_images(product["image_urls"], images_dir)
+                # 動画生成用の正方形画像（800×800）を生成
+                create_square_images(image_paths, output_dir)
             except Exception as e:
                 logger.warning("Step2 failed for %s: %s", asin, e, exc_info=True)
                 yield emit({"type": "error", "index": idx, "step": 2, "message": "画像のダウンロードに失敗しました。"})
@@ -2761,6 +2764,7 @@ async def resume_batch(batch_id: str):
             yield emit({"type": "step", "index": idx, "step": 2, "total": total, "name": "商品画像取得", "est": "10秒"})
             try:
                 image_paths = download_images(product["image_urls"], images_dir)
+                create_square_images(image_paths, output_dir)
             except Exception as e:
                 logger.warning("Resume Step2 failed for %s: %s", asin, e, exc_info=True)
                 yield emit({"type": "error", "index": idx, "step": 2, "message": "画像ダウンロードに失敗しました。"})
@@ -3321,6 +3325,8 @@ async def api_add_images(request: Request):
     existing_count = len(product.get("image_paths", [])) if product else len([p for p in (output_dir / "images").glob("*") if p.suffix.lower() in _IMAGE_EXTS]) if (output_dir / "images").exists() else 0
 
     new_paths = download_supplemental_images(image_urls, output_dir, start_index=existing_count)
+    # 追加画像も正方形版を生成
+    create_square_images(new_paths, output_dir)
     new_urls = [f"/files/{asin}/images/{Path(p).name}" for p in new_paths]
 
     total_count = existing_count + len(new_paths)
