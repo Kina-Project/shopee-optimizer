@@ -282,61 +282,64 @@ def download_images(image_urls, output_dir):
 # ============================================================
 
 def search_google_images(query, num=10):
-    """画像検索（Google CSE → DuckDuckGoフォールバック）"""
-    # 1. Google Custom Search APIを試す
-    results = _search_google_cse(query, num)
+    """画像検索（Serper → DuckDuckGo フォールバック）"""
+    # 1. Serper.dev（Google画像検索結果）
+    results = _search_serper_images(query, num)
     if results:
         return results
-    logger.info("Google CSEで結果なし。DuckDuckGoにフォールバック: %s", query)
+    logger.info("Serperで結果なし。DuckDuckGoにフォールバック: %s", query)
     # 2. フォールバック: DuckDuckGo画像検索
     return _search_duckduckgo_images(query, num)
 
 
-def _search_google_cse(query, num=10):
-    """Google Custom Search APIで商品画像を検索"""
-    api_key = os.environ.get("GOOGLE_CSE_API_KEY", "").strip()
-    cx = os.environ.get("GOOGLE_CSE_CX", "").strip()
-    if not api_key or not cx:
-        logger.warning("Google CSE APIキーまたはCXが未設定")
+def _search_serper_images(query, num=10):
+    """Serper.dev API で Google 画像検索結果を取得（月2,500回無料）"""
+    api_key = os.environ.get("SERPER_API_KEY", "").strip()
+    if not api_key:
+        logger.warning("SERPER_API_KEY が未設定")
         return []
-    params = {
-        "key": api_key,
-        "cx": cx,
-        "q": query,
-        "searchType": "image",
-        "num": min(num, 10),
-        "imgSize": "large",
-        "safe": "active",
-    }
     try:
-        resp = requests.get("https://www.googleapis.com/customsearch/v1", params=params, timeout=15)
+        resp = requests.post(
+            "https://google.serper.dev/images",
+            json={"q": query, "gl": "jp", "hl": "ja", "num": min(num, 10)},
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            timeout=15,
+        )
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        logger.warning("Google CSE APIエラー: %s", e)
+        logger.warning("Serper画像検索エラー: %s", e)
         return []
     results = []
-    for item in data.get("items", []):
+    for item in data.get("images", []):
         results.append({
-            "url": item.get("link", ""),
+            "url": item.get("imageUrl", ""),
             "title": item.get("title", ""),
-            "thumbnail": item.get("image", {}).get("thumbnailLink", ""),
-            "context_url": item.get("image", {}).get("contextLink", ""),
-            "width": item.get("image", {}).get("width", 0),
-            "height": item.get("image", {}).get("height", 0),
+            "thumbnail": item.get("thumbnailUrl", ""),
+            "context_url": item.get("link", ""),
+            "width": item.get("imageWidth", 0),
+            "height": item.get("imageHeight", 0),
         })
     return results
 
 
 def _search_duckduckgo_images(query, num=10):
-    """DuckDuckGo画像検索（duckduckgo-searchライブラリ使用）"""
-    try:
-        from duckduckgo_search import DDGS
-        with DDGS() as ddgs:
-            raw = list(ddgs.images(query, region="jp-jp", safesearch="moderate", max_results=num))
-    except Exception as e:
-        logger.warning("DuckDuckGo画像検索エラー: %s", e)
-        return []
+    """DuckDuckGo画像検索（duckduckgo-searchライブラリ使用、リトライ付き）"""
+    import time
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            from duckduckgo_search import DDGS
+            with DDGS() as ddgs:
+                raw = list(ddgs.images(query, region="jp-jp", safesearch="moderate", max_results=num))
+            if raw:
+                break
+        except Exception as e:
+            logger.warning("DuckDuckGo画像検索エラー (試行%d/%d): %s", attempt + 1, max_retries + 1, e)
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+            else:
+                return []
     results = []
     for item in raw:
         results.append({
