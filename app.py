@@ -1648,7 +1648,7 @@ async function finalizeBatch(){
   const data=await res.json();
   if(!res.ok){alert(data.detail||'確定処理に失敗しました');return}
   let msg=`${data.finalized_count}件を確定しました`;
-  if(data.fallback){msg+='\n（バッチデータを復元して処理しました）'}
+  if(data.fallback){msg+=' （バッチデータを復元して処理しました）'}
   document.getElementById('finalizeMsg').textContent=msg;
   reviewProducts=data.products || reviewProducts;
   renderReview();
