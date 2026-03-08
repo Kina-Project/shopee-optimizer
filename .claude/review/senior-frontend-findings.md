@@ -12,31 +12,183 @@
 | 1 | フォームの `<input>` / `<select>` に `<label>` が一切紐付いていない | アクセシビリティ | 9 | 10 | 90 |
 | 2 | 画像の `alt` 属性が機械的（`image-1`, `image-2` 等）で意味を持たない。履歴ページの `<img>` には `alt` 自体が存在しない（行1757・1853・1859・2195・2201） | アクセシビリティ | 8 | 9 | 72 |
 | 3 | `alert()` をエラー通知・バリデーションに多用（行792・954・959・1033・1034・1181・1463・1479等）。ユーザーに次の行動を促す情報が不足 | UX | 8 | 9 | 72 |
-| 4 | `batchResumeBar` の挿入先ID不一致バグ: 行1206で `getElementById('progressPanel')` を参照しているが実DOMは `id="productPanel"`（行722）→ null参照で再開ボタンが非表示 | バグ / UX | 9 | 6 | 54 |
-| 5 | `regenerate()` 関数（行1451〜1469）にローディング状態・disabled制御・try-catchが一切ない。二重送信リスクあり | UX / JS品質 | 8 | 8 | 64 |
-| 6 | `finalizeBatch()`（行1533〜1546）にローディング状態・disabled制御がない | UX / JS品質 | 7 | 8 | 56 |
-| 7 | history_asin_page の `playVideo()` 関数（行1963〜1974）でURLをそのまま `innerHTML` 文字列に展開。XSSリスク | セキュリティ | 9 | 5 | 45 |
-| 8 | `driveVideoFallback()`（行1269〜1291）で `link.href = driveUrl` に `javascript:` スキームバリデーションなし | セキュリティ | 8 | 5 | 40 |
-| 9 | SSEストリーム処理が `resumeBatch()`（行1000〜1022）と `startRestartFromMain()`（行1597〜1613）でコールバック再帰パターン。`runBatch()` は while-loop なのに不統一 | JS品質 | 7 | 7 | 49 |
+| 4 | `batchResumeBar` の挿入先ID不一致バグ: 行1174で `getElementById('progressPanel')` を参照しているが実DOMは `id="productPanel"`（行689）→ null参照で再開ボタンが非表示 | バグ / UX | 9 | 6 | 54 |
+| 5 | `regenerate()` 関数（行1407〜1457）にローディング状態・disabled制御・カウンターtimerがDOMライフサイクルと連動していない | UX / JS品質 | 8 | 8 | 64 |
+| 6 | `finalizeBatch()`（行1520〜1533）にローディング状態・disabled制御がない | UX / JS品質 | 7 | 8 | 56 |
+| 7 | history_asin_page の `playVideo()` 関数（行1855〜1872）でURLをそのまま `innerHTML` 文字列に展開。XSSリスク | セキュリティ | 9 | 5 | 45 |
+| 8 | `driveVideoFallback()`（行1239〜1261）で `link.href = driveUrl` に `javascript:` スキームバリデーションなし | セキュリティ | 8 | 5 | 40 |
+| 9 | SSEストリーム処理が `resumeBatch()`（行934〜997）でコールバック再帰パターン。`runBatch()` は while-loop なのに不統一 | JS品質 | 7 | 7 | 49 |
 | 10 | タブUI（`.tab-btn`）に `role="tab"` / `aria-selected` / `role="tablist"` がない。スクリーンリーダー非対応 | アクセシビリティ | 8 | 8 | 64 |
-| 11 | プログレスバーに `role="progressbar"`, `aria-valuenow`, `aria-valuemin`, `aria-valuemax` がない（行928〜931） | アクセシビリティ | 5 | 5 | 25 |
+| 11 | プログレスバーに `role="progressbar"`, `aria-valuenow`, `aria-valuemin`, `aria-valuemax` がない（行897〜899） | アクセシビリティ | 5 | 5 | 25 |
 | 12 | `--c-text-muted: #9298a8` が白背景上で WCAG AA 基準（4.5:1）を満たさない（実測約3.3:1） | アクセシビリティ | 7 | 8 | 56 |
-| 13 | ステップドット（行576〜587）が色のみで区別。`.step-done` 以外のステータスに形状による識別がなく色覚多様性に未対応 | アクセシビリティ | 6 | 7 | 42 |
-| 14 | `renderActiveProductPanel()`（行915〜951）が毎秒 `innerHTML` で全体を再生成（`elapsedTimer` 1秒間隔）。不要なDOM破棄・再構築 | パフォーマンス | 6 | 7 | 42 |
-| 15 | `renderReview()`（行1298〜1432）が選択変更のたびに全パネルを `innerHTML` 再生成 → 再生中の動画が中断される | パフォーマンス / UX | 7 | 7 | 49 |
-| 16 | `<video>` 要素に `preload` 属性・`aria-label` がない（行1374・2207） | アクセシビリティ / パフォーマンス | 6 | 7 | 42 |
+| 13 | ステップドット（行537〜554）が色のみで区別。`.step-done` 以外のステータスに形状による識別がなく色覚多様性に未対応 | アクセシビリティ | 6 | 7 | 42 |
+| 14 | `renderActiveProductPanel()`（行883〜919）が毎秒 `innerHTML` で全体を再生成（`elapsedTimer` 1秒間隔）。不要なDOM破棄・再構築 | パフォーマンス | 6 | 7 | 42 |
+| 15 | `renderReview()`（行1268〜1389）が選択変更のたびに全パネルを `innerHTML` 再生成 → 再生中の動画が中断される | パフォーマンス / UX | 7 | 7 | 49 |
+| 16 | `<video>` 要素に `preload` 属性・`aria-label` がない（行1346付近） | アクセシビリティ / パフォーマンス | 6 | 7 | 42 |
 | 17 | 全フロントエンドコードが Python 文字列リテラル1個に格納（約1300行）。コンポーネント分割・テスト・リンティングが不可能 | コード品質 | 8 | 10 | 80 |
 | 18 | 履歴3ページのCSS/HTMLがメインページと完全に重複定義。保守性が極めて低い | コード品質 | 7 | 9 | 63 |
 | 19 | Google Fonts を3ファミリ同時読み込み。Noto Sans JP は日本語フォントで重く、LCPに悪影響の可能性 | パフォーマンス | 6 | 7 | 42 |
-| 20 | `SSE接続切断時の自動再接続ロジックがない。fetch+getReader方式はEventSourceと異なりリトライが自動化されない | UX | 6 | 7 | 42 |
+| 20 | SSE接続切断時の自動再接続ロジックがない。fetch+getReader方式はEventSourceと異なりリトライが自動化されない | UX | 6 | 7 | 42 |
 | 21 | バリデーションが「実行ボタン押下後」のみ。URL入力時のリアルタイムバリデーション（Amazon URLパターンチェック）がない | UX | 5 | 6 | 30 |
-| 22 | `onclick` インラインハンドラにASIN等を文字列埋め込み（行1325・1349・1394等）。ASINにシングルクォートが含まれた場合にJS構文破壊の可能性 | セキュリティ | 7 | 7 | 49 |
-| 23 | `handleRestartEventMain()` 内 `step_skip`（行1625）のSTEP_NAMES参照が `STEP_NAMES[ev.step]` → 0-indexedと1-indexedの混在によりインデックスずれ | バグ | 6 | 4 | 24 |
-| 24 | `quota_exhausted` イベント（行1181）で `alert()` 後にUIがブロックされるが、次アクション（チャージ方法・再開手順）の案内が画面上に残らない | UX | 7 | 7 | 49 |
-| 25 | `setTimeout(syncActiveInputFromField, 0)` と `setTimeout(syncActiveInputFromField, 300)` が「おまじない」的に二重実行（行833〜834）。根本原因への対処になっていない | コード品質 | 4 | 3 | 12 |
-| 26 | `getTabLabel()` 関数（行872〜875）が `item.title` を取得しながら `base`（ASIN）のみを返す。title が存在してもタブに表示されない | バグ | 5 | 5 | 25 |
-| 27 | history_asin_page の1行インラインHTML（行1948）が1400文字超。可読性ゼロ | コード品質 | 5 | 4 | 20 |
-| 28 | レスポンシブ対応が `@media(max-width:680px)` の1ブレークポイントのみ。タブレット（768〜1024px）に対する考慮なし | UX | 5 | 6 | 30 |
+| 22 | `onclick` インラインハンドラにASIN等を文字列埋め込み（行1297・1305・1321等）。ASINにシングルクォートが含まれた場合にJS構文破壊の可能性 | セキュリティ | 7 | 7 | 49 |
+| 23 | `getTabLabel()` 関数（行840〜843）が `item.title` を条件分岐しているが `base`（ASIN）のみを返す。title が存在してもタブに表示されない | バグ | 5 | 5 | 25 |
+| 24 | `quota_exhausted` イベント（行1148）で `alert()` 後にUIがブロックされるが、次アクション（チャージ方法・再開手順）の案内が画面上に残らない | UX | 7 | 7 | 49 |
+| 25 | `setTimeout(syncActiveInputFromField, 0)` と `setTimeout(syncActiveInputFromField, 300)` が「おまじない」的に二重実行（行801〜802）。根本原因への対処になっていない | コード品質 | 4 | 3 | 12 |
+| 26 | レスポンシブ対応が `@media(max-width:680px)` の1ブレークポイントのみ。タブレット（768〜1024px）に対する考慮なし | UX | 5 | 6 | 30 |
+
+---
+
+## PR#19〜#22 変更内容の個別評価
+
+### PR#19: 演出名日本語表示・searchShownAsins永続化・再生成ステータス・確定→使用動画・ステップ再開削除
+
+#### 良い変更
+
+**EFFECT_LABELSのPython側定義（行61〜67）**
+Python側でEFFECT_LABELSを定義し、`/history/{batch_id}/{asin}` ページの動画一覧表示（行1954）でPythonの `EFFECT_LABELS.get()` を利用している点は正しいアプローチ。サーバーサイドレンダリング箇所での利用は一元管理できている。
+
+**searchShownAsins Set（行710）とrenderReview内の永続化ロジック（行1292〜1293）**
+`product_done` イベント時（行1192）と `all_done` イベント時（行1206）の2箇所でSetに追加しており、処理完了後に画像検索UIが不要になっても表示を維持できる設計は意図通り。
+
+**再生成ステータス表示（行1368・1418〜1456）**
+`regenStatus_${asin}` 要素を固定的に確保し、カウンターtimerでリアルタイム更新する設計は適切。完了・エラー時の色分け（緑/赤）も分かりやすい。
+
+#### 問題のある変更
+
+**CRITICAL: EFFECT_LABELSの三重定義**
+
+| 定義箇所 | 行番号 | 用途 |
+|---------|--------|------|
+| Python: `EFFECT_LABELS = {...}` | 61〜67行 | /history/{batch_id}/{asin}ページの動画履歴表示 |
+| JS inline object（バージョン選択セレクト内） | 1374行 | レビュー画面の「使用動画」セレクト |
+| JS固定HTMLのselectオプション（複数箇所） | 1355〜1359行、historyページ | 演出選択セレクト |
+
+バージョン選択セレクト（1374行）のインラインオブジェクト：
+```javascript
+({zoom:'ズーム',unbox:'開封',steam:'湯気',condensation:'結露',pickup:'持ち上げ'})[x.effect]||x.effect
+```
+このオブジェクトはJSグローバル変数として定義されておらず、renderReview()が呼ばれるたびに毎回生成される使い捨てオブジェクトである。演出種類が追加された際にここだけ更新漏れが起きるリスクが高い。
+
+**HIGH: searchShownAsinsがrunBatch時にリセットされない**
+
+```javascript
+// runBatch関数（行1004〜）のリセット処理
+reviewProducts=[];
+activeReviewProductIndex=0;
+currentBatchId='';
+// searchShownAsins.clear() が存在しない
+```
+
+同一ブラウザセッション内で複数バッチを実行した場合、前バッチで「手動で画像検索を開いたASIN」がSetに残り続ける。次バッチで同じASINを処理した際にimage_shortage=falseであっても画像検索UIが表示され続ける。
+
+**CRITICAL: batchResumeBarの挿入先ID不一致（引き続き未修正）**
+
+```javascript
+// 行1174: bug存在
+const panel=document.getElementById('progressPanel');  // null が返る
+if(panel) panel.parentNode.insertBefore(resumeDiv,panel.nextSibling);
+// → 再開ボタンが一切表示されない
+```
+
+実際のDOMには `id="productPanel"`（行689）が存在し、`progressPanel` というIDは存在しない。
+
+**MEDIUM: regenStatus timer の DOMライフサイクル非連動**
+
+```javascript
+// 行1423
+const timer=setInterval(()=>{sec++;statusEl.textContent=`動画を再生成中です（${sec}秒経過）...`;},1000);
+```
+
+`statusEl` は `renderReview()` が呼ばれると削除されるDOMノード。ユーザーが再生成中に別タブへ切り替えると `renderReview()` が実行され `statusEl` がDOMから消えるが、timerは生き続ける。JavaScriptはデタッチされたDOMノードへの参照を保持するのでGCも走らない。コンソールエラーは出ないが不要なメモリ保持が発生する。
+
+修正案：
+```javascript
+const timer=setInterval(()=>{
+  sec++;
+  const currentEl=document.getElementById(`regenStatus_${asin}`);
+  if(!currentEl){clearInterval(timer);return;}
+  currentEl.textContent=`動画を再生成中です（${sec}秒経過）...`;
+},1000);
+```
+
+**LOW: resumeBatch完了後のボタンテキスト不一致**
+
+```javascript
+// resumeBatch完了時（行972）
+btn.disabled=false;btn.textContent='一括処理開始';
+
+// runBatch finally（行1064）
+btn.textContent='一括実行';
+
+// HTMLの初期値（行677）
+<button id="runBtn" type="button" class="btn">一括実行</button>
+```
+
+「一括実行」と「一括処理開始」が混在。初期HTMLに合わせて「一括実行」に統一すべき。
+
+**ステップ再開削除後のUI確認**
+
+`resumeBatch` 関数（行934〜997）は残存しており、`batch_stopped` イベントハンドラ（行1150〜1178）から呼び出される。ステップ再開の削除はサーバーサイドの対応で、フロントのresumeバー表示ロジックは残っている。課題はID不一致で表示されないことだが、表示ロジック自体は削除されていない点は確認済み（意図通りと判断）。
+
+---
+
+### PR#21: /add-imagesのエラーハンドリング変更（batch消失時もダウンロード可能）
+
+**バックエンド変更の方向性**: 正しい。batch消失時でもファイルシステムベースで`existing_count`を取得（行3279）し、ダウンロードを継続する設計はユーザーの作業を継続させる点で良い。
+
+**フロントエンドのUX問題**
+
+```javascript
+// addSelectedImages（行1492〜1518）
+const data=await res.json();
+if(!res.ok){alert(data.detail||'取り込みに失敗しました');return}
+// 成功時の処理...
+const p=reviewProducts.find(x=>x.asin===asin);
+if(p){
+  p.image_count=data.total_image_count;
+  // ...
+}
+```
+
+batch消失時（product=None）でも200レスポンスが返るが、フロントでは`reviewProducts`内の`p`を更新するのみ。ユーザーに「バッチデータが見つからないため、ローカルファイルのみに追加しました（次回の再生成で反映されます）」等のインフォメーション表示がない。
+
+また、batch消失時は`product["image_paths"]`の更新がサーバー側でスキップされる（行3286の`if product:`分岐）ため、フロントの`p.image_urls`は更新されても次回サーバーアクセス時に整合性が取れない可能性がある。
+
+---
+
+### PR#22: /regenerate-videoの応答形式変更（batch消失時はファイルシステムから復元）
+
+**バックエンド変更の方向性**: 正しい。`get_batch_or_none`でファイルシステムからの復元を試み、それも失敗した場合のフォールバック（行3060〜3067）は適切。
+
+**フロントエンドへの影響**
+
+batch消失時の `all_videos` 構造（行3145）：
+```python
+all_videos = (product.get("videos", []) if product else existing_videos + [video_record])
+```
+
+`existing_videos` は `[{"version": p.stem} for p in sorted(videos_dir.glob("*.mp4"))]`（行3064）で生成される。このオブジェクトには `effect`, `model`, `video_url`, `drive_file_url` キーが存在しない。
+
+フロントのrenderReview（行1374）で参照している：
+```javascript
+${(p.videos||[]).map(x=>`<option value="${x.version}" ${...}>${x.version}（${EFFECT_LABELS_OBJ[x.effect]||x.effect}）</option>`)}
+```
+
+`x.effect` が `undefined` になるため、「v1（undefined）」と表示される。また `x.video_url` がないため動画再生ができない。
+
+**改善案**: batch消失時の `existing_videos` に最低限 `video_url` を付与する：
+```python
+existing_videos = [
+    {
+        "version": p.stem,
+        "effect": "zoom",
+        "model": "unknown",
+        "video_url": f"/files/{asin}/videos/{p.name}",
+        "drive_file_url": "",
+    }
+    for p in sorted(videos_dir.glob("*.mp4"))
+]
+```
 
 ---
 
@@ -44,10 +196,10 @@
 
 | 軸 | スコア | 根拠 |
 |---|-------|------|
-| UX/使いやすさ（20点満点） | 12 | 操作フローは直感的で、ステップ進捗のリアルタイム表示・タブUI・残り時間表示など基本フィードバックは実装済み。しかし `alert()` 多用・再生成/確定のローディング状態欠如・動画再生中断・バリデーション不足・バッチ再開ボタン非表示バグが目立つ |
+| UX/使いやすさ（20点満点） | 12 | 操作フローは直感的で、ステップ進捗のリアルタイム表示・タブUI・残り時間表示・再生成ステータスカウンターなど基本フィードバックは実装済み。しかし `alert()` 多用・再生成timerのDOMライフサイクル問題・動画再生中断・バッチ再開ボタン非表示バグが目立つ |
 | アクセシビリティ（20点満点） | 6 | label/aria属性がほぼ全フォームで欠落。タブUIにrole指定なし。動画にaria-labelなし。コントラスト比不足。履歴ページ画像はalt属性すらない |
 | パフォーマンス（20点満点） | 12 | CSS変数・Googleフォント遅延ロード・`loading="lazy"` は適切。毎秒全体innerHTML再生成・動画要素の再構築が継続する点と、Noto Sans JP の重さが課題 |
-| JavaScript品質（20点満点） | 10 | `esc()` によるXSS対策が多くの箇所で実施済みで評価できる。コールバック再帰のSSE処理・try-catch抜け・`alert()` 依存・複数のバグ（ID不一致・インデックスずれ）がマイナス |
+| JavaScript品質（20点満点） | 10 | `esc()` によるXSS対策が多くの箇所で実施済みで評価できる。コールバック再帰のSSE処理・EFFECT_LABELS三重定義・searchShownAsins未クリア・batchResumeBar ID不一致がマイナス |
 | CSS設計（20点満点） | 13 | CSS変数の活用・セマンティックな命名は良好。履歴ページでのCSS重複定義・JS内ハードコードstyle・インラインstyleの乱用が惜しい |
 
 **合計: 53 / 100点**
@@ -56,88 +208,51 @@
 
 ## 改善提案トップ3
 
-### 提案1: 即時バグ修正 — `batchResumeBar` の挿入先ID + XSSリスク修正
+### 提案1: 即時バグ修正 — `batchResumeBar` の挿入先ID修正
 
 **問題:**
-行1206で `document.getElementById('progressPanel')` を参照しているが、実際のDOMには `id="productPanel"`（行722）が存在する。`progressPanel` はnullになるため**バッチ再開ボタンが現状では表示されない**。
+行1174で `document.getElementById('progressPanel')` を参照しているが、実際のDOMには `id="productPanel"`（行689）が存在する。`progressPanel` はnullになるため**バッチ再開ボタンが現状では表示されない**。
 
 ```javascript
-// 行1206 修正前
-const panel = document.getElementById('progressPanel');
-if(panel) panel.parentNode.insertBefore(resumeDiv, panel.nextSibling);
+// 行1174 修正前
+const panel=document.getElementById('progressPanel');
+if(panel) panel.parentNode.insertBefore(resumeDiv,panel.nextSibling);
 
-// 修正後
-const progressSec = document.getElementById('progressSec');
+// 修正後（progressSecの末尾に追加）
+const progressSec=document.getElementById('progressSec');
 if(progressSec) progressSec.appendChild(resumeDiv);
 ```
 
-同時に `playVideo()` 関数のXSS修正:
-
-```javascript
-// 行1971 修正前 — URLをinnerHTML文字列展開（XSSリスク）
-area.innerHTML = '<video id="main-video" src="' + url + '" controls autoplay ...>';
-
-// 修正後 — DOM API で組み立てる
-const vid = document.createElement('video');
-vid.id = 'main-video';
-vid.src = url;           // src への直接代入はXSS安全
-vid.controls = true;
-vid.autoplay = true;
-vid.style.cssText = 'max-width:480px;width:100%;border-radius:12px;background:#000';
-area.innerHTML = '';
-area.appendChild(vid);
-```
-
-- 実装コスト: 低（30分以内）
-- 期待効果: バッチ停止後の再開ボタンが正常表示される（現状は確実に非表示バグ）、XSSリスクを排除
+- 実装コスト: 低（5分）
+- 期待効果: バッチ停止後の再開ボタンが正常表示される（現状は確実に非表示バグ）
 
 ---
 
-### 提案2: ユーザーフィードバックの統一化と非同期操作のUX改善
+### 提案2: searchShownAsinsリセット + EFFECT_LABELS一元化
 
 **問題:**
-- `alert()` がエラー通知・バリデーション・確認で多用されており、モーダルブロックでUXを阻害
-- `regenerate()` / `finalizeBatch()` / `searchImages()` / `addSelectedImages()` にローディング状態がない
-- `renderReview()` が毎回 `innerHTML` 全再構築するため、再生中の動画が選択変更時に中断される
+- runBatch時にsearchShownAsinsがリセットされず、複数バッチで誤表示が継続する
+- EFFECT_LABELSが3箇所で個別定義されており、演出追加時に漏れが起きる
 
-**解決策:**
-
-1. `alert()` をインラインのトースト関数に置き換え（15〜20箇所）:
+**解決策A（即時・1行）**: runBatch冒頭に追加
 ```javascript
-function showToast(msg, type = 'error') {
-  const toast = document.createElement('div');
-  toast.style.cssText = `position:fixed;bottom:24px;right:24px;padding:12px 20px;border-radius:8px;
-    background:${type==='error'?'var(--c-error-bg)':'var(--c-success-bg)'};
-    color:${type==='error'?'var(--c-error)':'var(--c-success)'};
-    border:1px solid currentColor;font-size:13px;z-index:9999;max-width:360px;box-shadow:var(--shadow-lg)`;
-  toast.textContent = msg;
-  document.body.appendChild(toast);
-  setTimeout(() => toast.remove(), 5000);
-}
+async function runBatch(){
+  const urls=collectInputUrls();
+  if(!urls.length){alert('URLを入力してください');return}
+  searchShownAsins.clear(); // ← 追加
 ```
 
-2. `regenerate()` にローディング制御を追加:
-```javascript
-async function regenerate(asin) {
-  const btn = event.currentTarget;  // onclickからeventで取得
-  btn.disabled = true;
-  btn.innerHTML = '<span class="btn-spinner"></span>生成中...';
-  try {
-    const res = await fetch('/regenerate-video', { ... });
-    // ...
-  } catch(e) {
-    showToast('再生成エラー: ' + e.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '再生成';
-  }
-}
+**解決策B（中期・EFFECT_LABELS一元化）**: Pythonの`EFFECT_LABELS`をJSONとしてHTMLに注入
+```python
+# Pythonテンプレート側
+EFFECT_LABELS_JS = json.dumps(EFFECT_LABELS, ensure_ascii=False)
+# HTMLの<script>先頭に追記
+f"const EFFECT_LABELS={EFFECT_LABELS_JS};"
 ```
+これによりPython側1箇所の管理で全表示箇所が同期する。
 
-3. `renderReview()` の動画要素は `src` の付け替えのみで済むよう、パネル全体の再構築を避ける（動画要素は1回だけ生成して `src` を差し替える）
-
-- 実装コスト: 中（半日〜1日）
-- 期待効果: ユーザーの操作迷子・二重送信を防止。エラー発生時の自己解決率向上。動画レビュー時の体験が大幅に改善
+- 実装コスト: A=低（1行）、B=中（1時間）
+- 期待効果: 複数バッチ時の誤表示解消。演出追加コストの削減
 
 ---
 
@@ -148,109 +263,54 @@ async function regenerate(asin) {
 
 **優先対応箇所（行番号付き）:**
 
-1. URL入力欄（行703）:
+1. URL入力欄（行670）:
 ```html
 <label for="tabUrlInput" class="visually-hidden">商品URL（Amazon）</label>
-<input id="tabUrlInput" class="url-input" type="text"
-       aria-describedby="url-hint"
-       placeholder="https://www.amazon.co.jp/dp/XXXXXXXXXX" />
-<span id="url-hint" class="small">AmazonのASINを含むURLを入力してください</span>
+<input id="tabUrlInput" .../>
 ```
 
-2. タブUI生成部分（行767・887・1310付近）に `role` 追加:
+2. タブUI生成部分にrole追加（renderInputTabs・renderProgressTabs・renderReview内）:
 ```javascript
-`<div role="tablist" aria-label="商品タブ">` +
-inputTabsState.map((t,i) =>
-  `<button class="tab-btn ${...}" role="tab"
-    aria-selected="${i===activeInputTabIndex}"
-    onclick="setActiveInputTab(${i})">${esc(...)}</button>`
+`<div role="tablist">` +
+items.map((...) =>
+  `<button ... role="tab" aria-selected="${isActive}">`
 ).join('') +
 `</div>`
 ```
 
-3. プログレスバー（行929〜931）:
+3. プログレスバー（行897〜899）:
 ```html
-<div style="height:3px;..."
-     role="progressbar"
+<div role="progressbar"
      aria-valuenow="${progressPct}"
      aria-valuemin="0"
-     aria-valuemax="100"
-     aria-label="処理進捗">
+     aria-valuemax="100">
 ```
 
-4. コントラスト改善（行364）:
+4. コントラスト改善（行332）:
 ```css
-/* 修正前 */
---c-text-muted: #9298a8;   /* 白背景で約3.3:1 — AA不合格 */
-/* 修正後 */
---c-text-muted: #6b7280;   /* 白背景で約4.6:1 — AA合格 */
-```
-
-5. 動画要素（行1374）に `aria-label` と `preload` 追加:
-```javascript
-`<video controls preload="metadata"
-  aria-label="${esc(p.asin)} の商品動画"
-  src="${esc(v.video_url)}"
-  onerror="driveVideoFallback(this,'${esc(v.drive_file_url||'')}')">`
+--c-text-muted: #6b7280;  /* 3.3:1 → 4.6:1 へ改善 */
 ```
 
 - 実装コスト: 中（1日）
-- 期待効果: WCAG 2.1 AA準拠への大きな前進。支援技術ユーザーが基本操作可能になる
-
----
-
-## 個別バグ・CRITICAL指摘
-
-### CRITICAL: `batchResumeBar` 挿入先IDの不一致（行1206）
-
-`document.getElementById('progressPanel')` は常に null を返す。DOMには `id="productPanel"` しか存在しない。バッチが一時停止・API残高不足で停止した際の再開ボタンがユーザーに見えない。
-
-### CRITICAL: `playVideo()` XSS（行1970〜1972）
-
-```javascript
-// 問題のコード（行1971）
-area.innerHTML = '<video id="main-video" src="' + url + '" controls autoplay style="...">';
-```
-
-`url` は呼び出し元HTMLで `html.escape` 済みだが、JSの文字列結合コンテキストではRaw文字列として扱われる。Drive動画のURLに悪意あるペイロードが混入した場合にXSS成立の可能性。DOM API（`createElement` + `src` 直接代入）で代替する。
-
-### HIGH: `handleRestartEventMain` のインデックスずれ（行1625）
-
-```javascript
-// 問題（行1625）
-list.innerHTML += '<div>Step ' + ev.step + ': ' + (ev.name || STEP_NAMES[ev.step-1] || '') + '...</div>';
-// STEP_NAMES は 0-indexed配列なので ev.step-1 が正しいが、
-// 別の箇所（行2114）では STEP_NAMES[ev.step] を使っており不統一
-```
-
-`STEP_NAMES[ev.step]` は Step1のときに `STEP_NAMES[1]` = "画像ダウンロード" を返す（1つずれ）。統一して `STEP_NAMES[ev.step - 1]` を使う。
-
-### HIGH: `getTabLabel()` が title を使っていない（行872〜875）
-
-```javascript
-function getTabLabel(item, index) {
-  const base = item.asin || `商品${index+1}`;
-  return item.title ? `${base}` : base;  // titleがあっても base だけ返す（titleを使っていない）
-}
-// 修正
-  return item.title ? `${base}: ${item.title.slice(0, 20)}` : base;
-```
+- 期待効果: WCAG 2.1 AA準拠への前進。支援技術ユーザーが基本操作可能になる
 
 ---
 
 ## 良かった点（維持すべき実装）
 
-1. **`esc()` 関数の一貫した使用（行751）**: `div.textContent = s` で自動エスケープしてから `innerHTML` を返すパターンは正しい。動的HTML生成箇所の大部分で一貫して使われている。
+1. **`esc()` 関数の一貫した使用（行719）**: `div.textContent = s` で自動エスケープしてから `innerHTML` を返すパターンは正しい。動的HTML生成箇所の大部分で一貫して使われている。
 
-2. **CSS変数の体系的な定義（行353〜385）**: カラー・影・ボーダー半径・フォントをCSS変数で一元管理。デザイン変更コストを最小化する良い設計。
+2. **CSS変数の体系的な定義（行320〜352）**: カラー・影・ボーダー半径・フォントをCSS変数で一元管理。デザイン変更コストを最小化する良い設計。
 
-3. **SSEストリームの接続監視（行1056〜1062）**: `streamWatchTimer` で更新が止まったら警告を出す仕組みは「処理が進んでいるか不安」というユーザー心理を正しく解消している。
+3. **SSEストリームの接続監視（行1023〜1030）**: `streamWatchTimer` で更新が止まったら警告を出す仕組みは「処理が進んでいるか不安」というユーザー心理を正しく解消している。
 
-4. **`beforeunload` ガード（行857〜863）**: 処理中のページ離脱防止は長時間処理ツールとして必須対応で適切。
+4. **`beforeunload` ガード（行825〜831）**: 処理中のページ離脱防止は長時間処理ツールとして必須対応で適切。
 
-5. **ファイルサーブのパストラバーサル対策（行2638〜2652）**: `resolve().is_relative_to()` によるディレクトリ外アクセス防止は適切なサーバーサイド対策。
+5. **ファイルサーブのパストラバーサル対策（行2016〜2030）**: `resolve().is_relative_to()` によるディレクトリ外アクセス防止は適切なサーバーサイド対策。
 
-6. **`driveImgFallback()` / `driveVideoFallback()` のフォールバック設計（行1262〜1291）**: ローカルファイル→Drive thumbnail→プロキシ→Driveリンクの多段フォールバックは実用的で良い設計。
+6. **`driveImgFallback()` / `driveVideoFallback()` のフォールバック設計（行1232〜1261）**: ローカルファイル→Drive thumbnail→プロキシ→Driveリンクの多段フォールバックは実用的で良い設計。
+
+7. **再生成ステータスの3状態表示（行1418〜1456）**: 処理中（黄）・完了（緑）・エラー（赤）の色分けとカウンター表示は適切なフィードバック設計。
 
 ---
 
@@ -260,17 +320,17 @@ function getTabLabel(item, index) {
 
 | 対応項目 | 該当行 | 理由 |
 |---------|--------|------|
-| `batchResumeBar` 挿入先IDを `progressSec` に修正 | 行1206 | バグ：再開ボタンが非表示 |
-| `playVideo()` を DOM API 化 | 行1970〜1972 | XSSリスク |
-| `driveVideoFallback()` に https バリデーション追加 | 行1275 | XSSリスク |
-| `getTabLabel()` で title を使うよう修正 | 行874 | バグ：titleが表示されない |
-| `STEP_NAMES[ev.step]` → `STEP_NAMES[ev.step-1]` に統一 | 行2114 | バグ：ステップ名ずれ |
+| `batchResumeBar` 挿入先を `progressPanel` → `progressSec` に修正 | 行1174 | バグ：再開ボタンが非表示（一時停止・API残高不足後の再開不能） |
+| `searchShownAsins.clear()` をrunBatch冒頭に追加 | 行1004 | バグ：複数バッチ実行時の誤表示継続 |
+| `resumeBatch`完了時のbtn.textContentを「一括実行」に統一 | 行972 | UX：ボタンテキスト不一致 |
 
 ### 短期改善（次スプリント）
 
-- `resumeBatch()` / `startRestartFromMain()` のSSE処理を `runBatch()` と同様のwhile-loopに統一
+- EFFECT_LABELSをPythonからJSON inject → JSグローバル定数として一元管理（3箇所の重複排除）
+- `regenStatus` timer にDOMライフサイクル保護（`document.getElementById`での再取得）を追加
+- PR#22のbatch消失時existing_videosに `video_url`・`effect` を付与（「v1（undefined）」表示の修正）
 - `alert()` をインライントースト通知に置き換え（推定15〜20箇所）
-- `regenerate()` / `finalizeBatch()` にローディング状態追加
+- `finalizeBatch()` にローディング状態追加
 - 全フォーム要素への `<label for>` または `aria-label` 付与
 - タブボタンへの `role="tab"` + `aria-selected` 付与
 - `--c-text-muted` を `#6b7280` に変更（コントラスト比確保）
@@ -280,7 +340,6 @@ function getTabLabel(item, index) {
 - `renderActiveProductPanel()` / `renderReview()` の差分更新（毎秒full-rerenderを廃止・動画src差し替えのみに）
 - 履歴ページCSS重複の解消（FastAPI `StaticFiles` で共通CSS配信）
 - インラインHTML全体をJinja2テンプレートまたは静的ファイルに分離
-- SSE接続断時の自動再接続ロジック実装（`EventSource` への切り替え検討、またはfetch+getReader方式でのexponential backoff retry）
+- SSE接続断時の自動再接続ロジック実装（exponential backoff retry）
 - URL入力時のリアルタイムバリデーション（Amazon URLパターン正規表現チェック）
-- グローバル変数による状態管理を軽量なStore（Pub/Sub）パターンへ移行
 - Playwright E2Eテストの整備（SSEストリーム処理・タブ切替・再生成フロー）
