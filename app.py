@@ -3036,14 +3036,6 @@ async def regenerate_video(request: Request):
     if effect not in EFFECT_PROMPTS:
         raise HTTPException(status_code=400, detail="無効なeffectです")
 
-    batch = get_batch_or_none(batch_id)
-    if not batch:
-        raise HTTPException(status_code=404, detail="batch_idが見つかりません")
-
-    product = next((p for p in batch["results"] if p.get("asin") == asin), None)
-    if not product:
-        raise HTTPException(status_code=404, detail="asinが見つかりません")
-
     config = get_config()
     try:
         ensure_drive_parent_folder_config(config)
@@ -3053,10 +3045,30 @@ async def regenerate_video(request: Request):
     videos_dir = output_dir / "videos"
     videos_dir.mkdir(parents=True, exist_ok=True)
 
-    version = next_video_version(product.get("videos", []))
+    # バッチから商品情報を取得（消失時はファイルシステムから復元）
+    batch = get_batch_or_none(batch_id)
+    product = None
+    if batch:
+        product = next((p for p in batch["results"] if p.get("asin") == asin), None)
+
+    if product:
+        product_image_paths = product.get("image_paths", [])
+        existing_videos = product.get("videos", [])
+        folder_id = product.get("drive_folder_id", "")
+        folder_url = product.get("drive_folder_url", "")
+        product_data = product.get("product", {})
+    else:
+        # ファイルシステムから復元
+        images_dir = output_dir / "images"
+        product_image_paths = sorted([str(p) for p in images_dir.glob("*")]) if images_dir.exists() else []
+        existing_videos = [{"version": p.stem} for p in sorted(videos_dir.glob("*.mp4"))]
+        folder_id = ""
+        folder_url = ""
+        product_data = {}
+
+    version = next_video_version(existing_videos)
     model = EFFECT_PROMPTS.get(effect, EFFECT_PROMPTS["zoom"]).get("model", "hailuo")
     output_path = videos_dir / f"{version}.mp4"
-    product_image_paths = product.get("image_paths", [])
     source_image_path = resolve_selected_image_path(asin, selected_image_url, product_image_paths)
     if not source_image_path:
         raise HTTPException(status_code=400, detail="再生成に使える画像がありません")
@@ -3065,7 +3077,7 @@ async def regenerate_video(request: Request):
     try:
         out = generate_video(
             [Path(p) for p in product_image_paths],
-            product.get("product", {}),
+            product_data,
             output_dir,
             config=config,
             effect=effect,
@@ -3082,11 +3094,9 @@ async def regenerate_video(request: Request):
         logger.warning("regenerate_video failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="動画の再生成に失敗しました。しばらくしてから再度お試しください。")
 
-    drive_file_url = ""
-    folder_id = product.get("drive_folder_id", "")
-    folder_url = product.get("drive_folder_url", "")
     if not folder_url and folder_id:
         folder_url = f"https://drive.google.com/drive/folders/{folder_id}"
+    drive_file_url = ""
     if folder_id:
         try:
             drive_file_url = upload_file_to_drive_folder(video_path, folder_id, config)
@@ -3109,8 +3119,6 @@ async def regenerate_video(request: Request):
         raise HTTPException(status_code=500, detail="DriveファイルURLを取得できませんでした")
     if not folder_url:
         raise HTTPException(status_code=500, detail="DriveフォルダURLを取得できませんでした")
-    product["drive_folder_id"] = folder_id
-    product["drive_folder_url"] = folder_url
 
     video_record = {
         "version": version,
@@ -3126,22 +3134,27 @@ async def regenerate_video(request: Request):
         "source_image_url": source_image_rel_url,
     }
 
-    product.setdefault("videos", []).append(video_record)
-    product["selected_version"] = version
-    product["selected_image_url"] = source_image_rel_url
-    save_batch_state(batch_id)
+    if product:
+        product["drive_folder_id"] = folder_id
+        product["drive_folder_url"] = folder_url
+        product.setdefault("videos", []).append(video_record)
+        product["selected_version"] = version
+        product["selected_image_url"] = source_image_rel_url
+        save_batch_state(batch_id)
+
+    all_videos = (product.get("videos", []) if product else existing_videos + [video_record])
 
     try:
         append_video_generation_log(
             asin=asin,
-            product_url=product.get("url", ""),
+            product_url=(product.get("url", "") if product else ""),
             version=version,
             effect=effect,
             model=model,
             memo=memo,
-            drive_folder_url=product.get("drive_folder_url", ""),
+            drive_folder_url=folder_url,
             drive_file_url=drive_file_url,
-            thumb_url=product.get("drive_thumb_url", ""),
+            thumb_url=(product.get("drive_thumb_url", "") if product else ""),
             is_selected=False,
             config=config,
         )
@@ -3154,9 +3167,9 @@ async def regenerate_video(request: Request):
     return JSONResponse({
         "ok": True,
         "asin": asin,
-        "videos": product.get("videos", []),
-        "selected_version": product.get("selected_version", version),
-        "selected_image_url": product.get("selected_image_url", source_image_rel_url),
+        "videos": all_videos,
+        "selected_version": version,
+        "selected_image_url": source_image_rel_url,
     })
 
 
