@@ -806,9 +806,12 @@ def generate_video_ai(image_path, prompt, model="hailuo", negative_prompt="", du
             model_config["model_id"],
             arguments=arguments,
             with_logs=True,
+            client_timeout=600,
         )
     except Exception as e:
         err_str = str(e).lower()
+        if "timeout" in err_str or "timed out" in err_str:
+            raise RuntimeError("動画生成がタイムアウトしました（10分超過）。しばらく待ってから再試行してください。") from e
         if any(kw in err_str for kw in ("insufficient", "balance", "credit", "quota", "payment", "billing")):
             raise QuotaExhaustedError("fal.ai", "fal.ai の残高が不足しています。チャージしてください。") from e
         raise
