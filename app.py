@@ -748,6 +748,7 @@ const STEP_NAMES=['Amazon商品情報を取得','画像ダウンロード','英�
 let currentBatchId='';
 let reviewProducts=[];
 let activeReviewProductIndex=0;
+const searchShownAsins=new Set();
 let startAt=0;
 let progressProducts=[];
 let activeProductIndex=0;
@@ -1229,6 +1230,7 @@ function handleEvent(evt){
     logLine(`  [${(evt.index??0)+1}] エラー: ${evt.message}`);
   }else if(evt.type==='product_done'){
     reviewProducts.push(evt.data);
+    if(evt.data && evt.data.image_shortage) searchShownAsins.add(evt.data.asin||'');
     if(progressProducts[evt.index]){
       progressProducts[evt.index].status='done';
       progressProducts[evt.index].asin=evt.asin||progressProducts[evt.index].asin;
@@ -1242,6 +1244,7 @@ function handleEvent(evt){
     const pb2=document.getElementById('pauseBtn');
     if(pb2) pb2.classList.add('hidden');
     reviewProducts=evt.results||reviewProducts;
+    reviewProducts.forEach(p=>{if(p.image_shortage) searchShownAsins.add(p.asin);});
     activeReviewProductIndex=0;
     renderReview();
     document.getElementById('reviewSec').classList.remove('hidden');
@@ -1327,8 +1330,8 @@ function renderReview(){
   const selectedImage=p.selected_image_url || v?.source_image_url || imageUrls[0] || '';
   p.selected_image_url=selectedImage;
 
-  if(p.image_shortage) p._search_shown=true;
-  const showSearch = p._search_shown || p.image_shortage;
+  if(p.image_shortage) searchShownAsins.add(p.asin);
+  const showSearch = searchShownAsins.has(p.asin) || p.image_shortage;
   const shortageHtml = showSearch ? `
     <div class="image-shortage-warn">
       <span>画像 ${p.image_count||0}枚${p.image_shortage ? '（3枚未満）' : ''}</span>
