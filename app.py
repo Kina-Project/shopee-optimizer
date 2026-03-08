@@ -3254,37 +3254,40 @@ async def api_add_images(request: Request):
     if not image_urls:
         raise HTTPException(status_code=400, detail="image_urlsが必要です")
 
-    batch = get_batch_or_none(batch_id)
-    if not batch:
-        raise HTTPException(status_code=404, detail="batch_idが見つかりません")
-
-    product = next((p for p in batch["results"] if p.get("asin") == asin), None)
-    if not product:
-        raise HTTPException(status_code=404, detail="asinが見つかりません")
-
     config = get_config()
     output_dir = config["output_base"] / asin
-    existing_count = len(product.get("image_paths", []))
+
+    batch = get_batch_or_none(batch_id)
+    product = None
+    if batch:
+        product = next((p for p in batch["results"] if p.get("asin") == asin), None)
+
+    # バッチが消えていても画像ダウンロードは実行する
+    existing_count = len(product.get("image_paths", [])) if product else len(list((output_dir / "images").glob("*"))) if (output_dir / "images").exists() else 0
 
     new_paths = download_supplemental_images(image_urls, output_dir, start_index=existing_count)
-    new_path_strs = [str(p) for p in new_paths]
     new_urls = [f"/files/{asin}/images/{Path(p).name}" for p in new_paths]
 
-    product["image_paths"].extend(new_path_strs)
-    product.setdefault("image_urls", [])
-    product["image_urls"].extend(new_urls)
-    product["image_count"] = len(product["image_paths"])
-    product["image_shortage"] = product["image_count"] < 3
-    if not product.get("selected_image_url") and product["image_urls"]:
-        product["selected_image_url"] = product["image_urls"][0]
-    save_batch_state(batch_id)
+    total_count = existing_count + len(new_paths)
+
+    if product:
+        new_path_strs = [str(p) for p in new_paths]
+        product["image_paths"].extend(new_path_strs)
+        product.setdefault("image_urls", [])
+        product["image_urls"].extend(new_urls)
+        product["image_count"] = len(product["image_paths"])
+        product["image_shortage"] = product["image_count"] < 3
+        if not product.get("selected_image_url") and product["image_urls"]:
+            product["selected_image_url"] = product["image_urls"][0]
+        total_count = product["image_count"]
+        save_batch_state(batch_id)
 
     return JSONResponse({
         "ok": True,
         "added_count": len(new_paths),
         "new_image_urls": new_urls,
-        "total_image_count": product["image_count"],
-        "image_shortage": product["image_shortage"],
+        "total_image_count": total_count,
+        "image_shortage": total_count < 3,
     })
 
 
