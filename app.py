@@ -684,7 +684,6 @@ select:focus,input[type="text"]:focus{outline:none;border-color:var(--c-brand);b
     <div class="section-label"><span class="num">2</span>処理進捗</div>
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
       <div id="progressText" class="small" style="flex:1"></div>
-      <button id="pauseBtn" type="button" class="btn btn-ghost btn-sm hidden" onclick="pauseBatch()" style="color:#dc2626;border-color:#dc2626">一時停止</button>
     </div>
     <div id="productTabs" class="tabs"></div>
     <div id="productPanel" class="progress-panel"></div>
@@ -919,19 +918,6 @@ function renderActiveProductPanel(){
   root.innerHTML=`${header}${banner}<ul class="steps">${steps}</ul>`;
 }
 
-async function pauseBatch(){
-  if(!currentBatchId){alert('バッチIDが不明です');return}
-  const btn=document.getElementById('pauseBtn');
-  if(btn){btn.disabled=true;btn.textContent='停止要求中...';}
-  try{
-    const res=await fetch(`/api/batch/${encodeURIComponent(currentBatchId)}/pause`,{method:'POST'});
-    if(!res.ok){const d=await res.json().catch(()=>({}));throw new Error(d.detail||`HTTP ${res.status}`);}
-  }catch(e){
-    alert('一時停止リクエスト失敗: '+e.message);
-    if(btn){btn.disabled=false;btn.textContent='一時停止';}
-  }
-}
-
 async function resumeBatch(batchId){
   if(!confirm('バッチ処理を再開しますか？')) return;
   const resumeBar=document.getElementById('batchResumeBar');
@@ -958,9 +944,6 @@ async function resumeBatch(batchId){
   renderActiveProductPanel();
   startElapsedTimer();
   document.getElementById('progressText').textContent='バッチ再開中...';
-  const pauseBtn2=document.getElementById('pauseBtn');
-  if(pauseBtn2){pauseBtn2.classList.remove('hidden');pauseBtn2.disabled=false;pauseBtn2.textContent='一時停止';}
-
   try{
     const res=await fetch(`/api/batch/${batchId}/resume`,{method:'POST'});
     const reader=res.body.getReader();
@@ -1019,8 +1002,6 @@ async function runBatch(){
   const btn=document.getElementById('runBtn');
   btn.disabled=true;
   btn.innerHTML='<span class="btn-spinner"></span>処理中...';
-  const pauseBtn=document.getElementById('pauseBtn');
-  if(pauseBtn){pauseBtn.classList.remove('hidden');pauseBtn.disabled=false;pauseBtn.textContent='一時停止';}
   lastStreamEventAt=Date.now();
   if(streamWatchTimer){clearInterval(streamWatchTimer);}
   streamWatchTimer=setInterval(()=>{
@@ -1151,8 +1132,6 @@ function handleEvent(evt){
     alert(evt.message);
   }else if(evt.type==='batch_stopped'){
     stopElapsedTimer();
-    const pb=document.getElementById('pauseBtn');
-    if(pb) pb.classList.add('hidden');
     logLine(`バッチ停止: ${evt.message}`);
     for(let i=(evt.stopped_at_index||0)+1;i<progressProducts.length;i++){
       progressProducts[i].status='skipped';
@@ -1202,8 +1181,6 @@ function handleEvent(evt){
     logLine(`商品 ${evt.index+1} 完了: ${evt.asin}`);
   }else if(evt.type==='all_done'){
     stopElapsedTimer();
-    const pb2=document.getElementById('pauseBtn');
-    if(pb2) pb2.classList.add('hidden');
     reviewProducts=evt.results||reviewProducts;
     reviewProducts.forEach(p=>{if(p.image_shortage) searchShownAsins.add(p.asin);});
     activeReviewProductIndex=0;
@@ -2624,16 +2601,6 @@ async def process_stream(request: Request):
             "Connection": "keep-alive",
         },
     )
-
-
-@app.post("/api/batch/{batch_id}/pause")
-async def pause_batch(batch_id: str):
-    """処理中のバッチに一時停止リクエストを送る。現在の商品完了後に停止。"""
-    batch = get_batch_or_none(batch_id)
-    if not batch:
-        raise HTTPException(status_code=404, detail="バッチが見つかりません")
-    BATCH_PAUSE_REQUESTS[batch_id] = True
-    return {"status": "pause_requested"}
 
 
 @app.post("/api/batch/{batch_id}/resume")
