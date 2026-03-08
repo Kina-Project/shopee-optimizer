@@ -287,6 +287,7 @@ def search_google_images(query, num=10):
     results = _search_google_cse(query, num)
     if results:
         return results
+    logger.info("Google CSEで結果なし。DuckDuckGoにフォールバック: %s", query)
     # 2. フォールバック: DuckDuckGo画像検索
     return _search_duckduckgo_images(query, num)
 
@@ -296,6 +297,7 @@ def _search_google_cse(query, num=10):
     api_key = os.environ.get("GOOGLE_CSE_API_KEY", "").strip()
     cx = os.environ.get("GOOGLE_CSE_CX", "").strip()
     if not api_key or not cx:
+        logger.warning("Google CSE APIキーまたはCXが未設定")
         return []
     params = {
         "key": api_key,
@@ -310,7 +312,8 @@ def _search_google_cse(query, num=10):
         resp = requests.get("https://www.googleapis.com/customsearch/v1", params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
-    except Exception:
+    except Exception as e:
+        logger.warning("Google CSE APIエラー: %s", e)
         return []
     results = []
     for item in data.get("items", []):
@@ -326,27 +329,16 @@ def _search_google_cse(query, num=10):
 
 
 def _search_duckduckgo_images(query, num=10):
-    """DuckDuckGo画像検索（APIキー不要）"""
-    import re
-    session = requests.Session()
-    session.headers.update({"User-Agent": HEADERS["User-Agent"]})
+    """DuckDuckGo画像検索（duckduckgo-searchライブラリ使用）"""
     try:
-        resp = session.get("https://duckduckgo.com/", params={"q": query}, timeout=10)
-        vqd_match = re.search(r'vqd="([^"]+)"', resp.text) or re.search(r"vqd=([^&]+)", resp.text)
-        if not vqd_match:
-            resp = session.post("https://duckduckgo.com", data={"q": query}, timeout=10)
-            vqd_match = re.search(r'vqd="([^"]+)"', resp.text) or re.search(r"vqd=([^&]+)", resp.text)
-        if not vqd_match:
-            return []
-        vqd = vqd_match.group(1)
-        img_resp = session.get("https://duckduckgo.com/i.js", params={
-            "l": "jp-jp", "o": "json", "q": query, "vqd": vqd, "f": ",,,", "p": "1",
-        }, timeout=10)
-        data = img_resp.json()
-    except Exception:
+        from duckduckgo_search import DDGS
+        with DDGS() as ddgs:
+            raw = list(ddgs.images(query, region="jp-jp", safesearch="moderate", max_results=num))
+    except Exception as e:
+        logger.warning("DuckDuckGo画像検索エラー: %s", e)
         return []
     results = []
-    for item in data.get("results", [])[:num]:
+    for item in raw:
         results.append({
             "url": item.get("image", ""),
             "title": item.get("title", ""),

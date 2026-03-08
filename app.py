@@ -1536,7 +1536,7 @@ async function searchImages(asin){
     const data=await res.json();
     if(!res.ok){resultsEl.innerHTML=`<div class="small">エラー: ${data.detail||'不明'}</div>`;return}
     const items=data.results||[];
-    if(!items.length){resultsEl.innerHTML='<div class="small">結果なし</div>';return}
+    if(!items.length){resultsEl.innerHTML='<div class="small">結果が見つかりませんでした。別のキーワードで試してください</div>';return}
     resultsEl.innerHTML=items.map((img,i)=>`
       <label class="image-search-item">
         <input type="checkbox" value="${esc(img.url)}" data-asin="${asin}" />
