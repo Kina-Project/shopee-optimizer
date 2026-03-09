@@ -2802,7 +2802,7 @@ async def process_stream(request: Request):
             if checkpoint_err:
                 yield emit({"type": "step_warn", "index": idx, "step": 6, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
-            if video_record:
+            if video_record and video_record.get("memo") != "既存動画を再利用":
                 try:
                     append_video_generation_log(
                         asin=asin,
@@ -3274,7 +3274,7 @@ async def resume_batch(batch_id: str):
             if checkpoint_err:
                 yield emit({"type": "step_warn", "index": idx, "step": 6, "message": f"シート中間記録エラー: {checkpoint_err}"})
 
-            if video_record:
+            if video_record and video_record.get("memo") != "既存動画を再利用":
                 try:
                     append_video_generation_log(
                         asin=asin, product_url=url, version=video_record["version"],
