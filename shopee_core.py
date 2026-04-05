@@ -554,16 +554,12 @@ def translate_image_text(openai_key, image_path, output_path, product):
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            response = client.responses.create(
-                model="gpt-4o",
-                input=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{base64_image}"},
-                        {"type": "input_text", "text": prompt},
-                    ],
-                }],
-                tools=[{"type": "image_generation", "size": "1024x1024", "quality": "high"}],
+            response = client.images.edit(
+                model="gpt-image-1.5",
+                image=open(image_path, "rb"),
+                prompt=prompt,
+                size="1024x1024",
+                quality="medium",
             )
             break  # 成功したらループを抜ける
         except Exception as e:
@@ -583,12 +579,11 @@ def translate_image_text(openai_key, image_path, output_path, product):
         logger.warning(f"画像翻訳リトライ上限到達 ({image_path})")
         return False
 
-    for output in response.output:
-        if output.type == "image_generation_call":
-            image_data = base64.b64decode(output.result)
-            with open(output_path, "wb") as f:
-                f.write(image_data)
-            return True
+    if response.data and response.data[0].b64_json:
+        image_data = base64.b64decode(response.data[0].b64_json)
+        with open(output_path, "wb") as f:
+            f.write(image_data)
+        return True
 
     return False
 
