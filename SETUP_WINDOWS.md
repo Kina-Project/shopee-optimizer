@@ -1,28 +1,130 @@
-# Shopee Optimizer セットアップ手順（Windows + Claude Code）
+# Shopee Optimizer セットアップ（Windows + Claude Code）
 
-このファイルをClaude Codeに読み込ませてください。
-Claude Codeが自動でセットアップを進めます。ユーザー操作が必要な場面では指示を出します。
+このファイルを読んだら、まず**モード判定**を行い、該当するステップをユーザーに一覧表示してください。
 
 ---
 
-## Claude Codeへの指示
+## Claude Codeへの共通指示
 
-あなたはこのツールのセットアップを担当します。以下の手順を**上から順番に**実行してください。
-
-- 自動で解決できるエラーは自分で対処してください
-- ユーザーの操作が必要な場合のみ、**具体的に何をしてほしいか**を伝えてください
-- 各ステップ完了後、次に進んでください。途中で止まらないでください
-- `python` が見つからない場合は `py` も試してください
-- **問題が発生して自分で解決できない場合**は、ユーザーに以下のように具体的に情報を求めてください：
+- 自動で解決できるエラーは自分で対処する
+- ユーザー操作が必要な場合のみ、**具体的に何をしてほしいか**を伝える
+- 各ステップ完了後、次に進む。途中で止まらない
+- `python` が見つからない場合は `py` も試す
+- **問題が発生して自分で解決できない場合**は、具体的に情報を求める：
   - 「エラーメッセージを貼り付けてください」
   - 「ブラウザの画面のスクリーンショットをください」
   - 「Google Cloud Consoleの○○ページのスクリーンショットをください」
   - 「.envファイルの中身を見せてください（APIキーは伏せてOKです）」
-  - 曖昧に「どうなりましたか？」とは聞かず、**何が見たいかを具体的に**伝えてください
+  - 曖昧に「どうなりましたか？」とは聞かず、**何が見たいかを具体的に**伝える
 
 ---
 
-### Step 1: 前提確認
+## モード判定
+
+まず、このフォルダに `.env` ファイルが**あるかどうか**を確認してください。
+また、PC上に以前の `shopee-optimizer-main` フォルダがないかも確認してください。
+
+```
+dir /s /b C:\Users\%USERNAME%\Desktop\shopee-optimizer-main*
+dir /s /b C:\Users\%USERNAME%\OneDrive\Desktop\shopee-optimizer-main*
+```
+
+判定結果に応じて、ユーザーに以下を表示してください：
+
+### A. アップデートの場合（旧フォルダが見つかった）
+
+> **アップデートモードで進めます。以下のステップを実行します：**
+>
+> 1. 旧フォルダから設定ファイルをコピー
+> 2. 依存パッケージの更新
+> 3. 起動確認
+>
+> 旧フォルダの設定をそのまま引き継ぐので、APIキーの再入力は不要です。
+
+→ **「A. アップデート手順」** に進む
+
+### B. 初回セットアップの場合（旧フォルダなし）
+
+> **初回セットアップモードで進めます。以下のステップを実行します：**
+>
+> 1. Python / ffmpeg のインストール確認
+> 2. 依存パッケージのインストール
+> 3. APIキーの設定（.env）
+> 4. サービスアカウント鍵の配置
+> 5. 起動
+> 6. Google Drive認証
+> 7. 動作確認
+>
+> 各APIキーの入力が必要です。事前にメモ帳等にまとめておくとスムーズです。
+
+→ **「B. 初回セットアップ手順」** に進む
+
+---
+
+# A. アップデート手順
+
+### A-1: 旧フォルダから設定ファイルをコピー
+
+旧フォルダのパスを特定したら、以下の3ファイルをこのフォルダにコピーしてください。
+
+```
+copy "（旧フォルダパス）\.env" ".env"
+```
+
+```
+mkdir keys 2>nul
+copy "（旧フォルダパス）\keys\service-account-key.json" "keys\service-account-key.json"
+```
+
+```
+mkdir "output\_config" 2>nul
+copy "（旧フォルダパス）\output\_config\drive_token.json" "output\_config\drive_token.json"
+```
+
+各ファイルが旧フォルダに存在しない場合はスキップしてOKです。
+
+コピーが完了したら、ユーザーに伝えてください：
+
+> 旧フォルダから以下をコピーしました：
+> - .env（APIキー設定）✅ or ❌
+> - keys/service-account-key.json（Sheets認証鍵）✅ or ❌
+> - output/_config/drive_token.json（Drive認証トークン）✅ or ❌
+
+---
+
+### A-2: 依存パッケージの更新
+
+```
+pip install -r requirements.txt
+```
+
+---
+
+### A-3: 起動確認
+
+```
+python app.py
+```
+
+起動したら、ユーザーに伝えてください：
+
+> アップデート完了です！
+> ブラウザで http://localhost:8080 を開いて動作確認してください。
+> 画面上部の「Drive 接続済み」が緑色になっていればOKです。
+>
+> もし「Drive 未接続」と表示されたら、クリックして再認証してください。
+>
+> 次回以降は `start_shopee.bat` をダブルクリックするだけで起動できます。
+>
+> **旧フォルダは念のためしばらく残しておいてください。**
+
+→ 完了
+
+---
+
+# B. 初回セットアップ手順
+
+### B-1: 前提確認
 
 以下のコマンドを実行して、インストール状況を確認してください。
 
@@ -38,9 +140,9 @@ ffmpeg -version
 
 ---
 
-### Step 2: 依存パッケージのインストール
+### B-2: 依存パッケージのインストール
 
-このファイルがあるフォルダ（shopee-optimizer-main）に移動して実行：
+このファイルがあるフォルダに移動して実行：
 
 ```
 pip install -r requirements.txt
@@ -50,24 +152,17 @@ pip install -r requirements.txt
 
 ---
 
-### Step 3: .env ファイルの設定
+### B-3: .env ファイルの設定（ユーザー操作が必要）
 
-以前セットアップした `.env` ファイルがPC上にある可能性があります。
-まず、デスクトップや以前のshopee-optimizer-mainフォルダ内に `.env` ファイルがないか探してください。
-
-```
-dir /s /b C:\Users\%USERNAME%\Desktop\*.env
-dir /s /b C:\Users\%USERNAME%\OneDrive\Desktop\*.env
-```
-
-- **見つかった場合**: その `.env` をこのフォルダにコピーしてください。APIキーはすでに設定済みです。
-- **見つからない場合**: `.env.example` を `.env` にコピーして、ユーザーにAPIキーの入力を依頼してください。
+`.env.example` を `.env` にコピー：
 
 ```
 copy .env.example .env
 ```
 
-`.env` が空（APIキーが未設定）の場合、ユーザーに以下を伝えてください：
+ユーザーがAPIキーをメモ帳等にまとめている場合は、そのファイルを読んで .env に設定しても構いません。
+
+APIキーが未設定の場合、ユーザーに以下を伝えてください：
 
 > .env ファイルをメモ帳で開きます。以下のAPIキーを入力して保存してください。
 > 
@@ -85,41 +180,25 @@ copy .env.example .env
 > 
 > 保存したら教えてください。
 
-ユーザーがAPIキーをどこかのファイルにまとめている場合は、そのファイルを読んで .env に設定しても構いません。
-
 ---
 
-### Step 4: サービスアカウント鍵の配置
-
-このフォルダ内に `keys` フォルダを作成してください。
+### B-4: サービスアカウント鍵の配置（ユーザー操作が必要な場合あり）
 
 ```
 mkdir keys
 ```
 
-以前セットアップした `service-account-key.json` がPC上にある可能性があります。
-まず探してください。
-
-```
-dir /s /b C:\Users\%USERNAME%\Desktop\*service-account*.json
-dir /s /b C:\Users\%USERNAME%\OneDrive\Desktop\*service-account*.json
-dir /s /b C:\Users\%USERNAME%\Downloads\*service-account*.json
-```
-
-また、以前のshopee-optimizer-mainフォルダ内の `keys` フォルダも確認してください。
-
-- **見つかった場合**: `keys/service-account-key.json` にコピーしてください。
-- **見つからない場合**: ユーザーに以下を伝えてください：
+ユーザーに以下を伝えてください：
 
 > Google Cloudで作成したサービスアカウントの鍵ファイル（JSON）を、
 > `keys/service-account-key.json` として配置してください。
 > ファイルがどこにあるか教えてください。こちらでコピーします。
 
+ユーザーがファイルの場所を教えてくれたら、`keys/service-account-key.json` にコピーしてください。
+
 ---
 
-### Step 5: 起動
-
-以下のコマンドでサーバーを起動してください。
+### B-5: 起動
 
 ```
 python app.py
@@ -134,7 +213,7 @@ python app.py
 
 ---
 
-### Step 6: Google Drive認証（ユーザー操作が必要）
+### B-6: Google Drive認証（ユーザー操作が必要）
 
 ユーザーに以下を伝えてください：
 
@@ -142,8 +221,7 @@ python app.py
 > これをクリックして、Googleアカウントでログイン・許可してください。
 > 「Google Drive 認証完了」と表示されたら成功です。自動的にトップページに戻ります。
 
-もし「Drive 未接続」ボタンから認証できない場合（Google Workspaceの制限等）は、
-以下のバックアップ手順を実行してください：
+もし認証できない場合（Google Workspaceの制限等）は、バックアップ手順を実行：
 
 ```
 python get_token.py
@@ -155,7 +233,7 @@ python get_token.py
 
 ---
 
-### Step 7: 動作確認
+### B-7: 動作確認
 
 ユーザーに以下を伝えてください：
 
@@ -167,24 +245,7 @@ python get_token.py
 > 
 > 次回以降は `start_shopee.bat` をダブルクリックするだけで起動できます。
 
----
-
-## アップデート手順
-
-新しいバージョンのZIPを受け取った場合：
-
-1. 新しいZIPをデスクトップ等に展開
-2. 新しいフォルダ内の `update_shopee.bat` をダブルクリック
-3. 旧フォルダのパスを入力（例: `C:\Users\admin\Desktop\shopee-optimizer-main`）
-4. `.env`、SA鍵、Drive認証トークンが自動でコピーされます
-5. `start_shopee.bat` をダブルクリックして起動
-
-**重要: 旧フォルダは更新完了後も念のため残しておいてください。**
-
-### 更新時に自動コピーされるファイル
-- `.env`（APIキー設定）
-- `keys/service-account-key.json`（Sheets認証鍵）
-- `output/_config/drive_token.json`（Drive認証トークン）
+→ 完了
 
 ---
 
@@ -202,6 +263,7 @@ python get_token.py
 
 ### Drive認証で「アクセスをブロック」と表示される
 → Google Cloud ConsoleのOAuth同意画面で、テストユーザーに使用するGoogleアカウントのメールアドレスを追加してください。
+→ スクリーンショットを送ってもらってください。
 
 ### スプレッドシートに書き込めない
 → サービスアカウントのメールアドレス（`xxx@xxx.iam.gserviceaccount.com`）がスプレッドシートに「編集者」として共有されているか確認してください。
