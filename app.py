@@ -13,7 +13,8 @@ import shutil
 import time
 import uuid
 import html
-from urllib.parse import quote
+import secrets
+from urllib.parse import quote, urlencode
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -24,7 +25,7 @@ except ImportError:
     gcs_storage = None
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse, Response
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse, Response, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from shopee_core import (
@@ -54,6 +55,8 @@ from shopee_core import (
     get_config,
     search_google_images,
     download_supplemental_images,
+    save_drive_token_file,
+    _load_drive_token_data,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -488,6 +491,14 @@ INDEX_HTML = """<!DOCTYPE html>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:var(--font-body);background:var(--c-bg);color:var(--c-text);-webkit-font-smoothing:antialiased;line-height:1.6}
 
+/* === Drive認証バッジ === */
+.drive-badge{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:600;text-decoration:none;border:1.5px solid;transition:all .2s}
+.drive-badge svg{width:14px;height:14px}
+.drive-badge.disconnected{border-color:rgba(220,38,38,.5);color:#fca5a5}
+.drive-badge.disconnected:hover{background:rgba(220,38,38,.15);border-color:rgba(220,38,38,.7);color:#fff}
+.drive-badge.connected{border-color:rgba(22,163,74,.5);color:#86efac}
+.drive-badge.connected:hover{background:rgba(22,163,74,.15);border-color:rgba(22,163,74,.7);color:#fff}
+
 /* === ヘッダー === */
 .header{
   background:var(--c-terminal);
@@ -790,6 +801,10 @@ select:focus,input[type="text"]:focus{outline:none;border-color:var(--c-brand);b
     <h1>Shopee <span class="brand-accent">Optimizer</span></h1>
     <p class="subtitle">Amazon商品情報の取得 / 翻訳 / AI動画生成 / Drive連携を一括処理</p>
     <div class="header-nav">
+      <a id="driveBadge" class="drive-badge disconnected" href="/auth/google" title="Google Drive認証">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.06-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/></svg>
+        <span id="driveLabel">Drive 未接続</span>
+      </a>
       <a href="/history">
         <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>
         履歴を見る
@@ -1656,6 +1671,34 @@ async function finalizeBatch(){
   reviewProducts=data.products || reviewProducts;
   renderReview();
 }
+
+// --- Drive認証ステータスチェック ---
+async function checkDriveStatus(){
+  try{
+    const res=await fetch('/auth/status');
+    const data=await res.json();
+    const badge=document.getElementById('driveBadge');
+    const label=document.getElementById('driveLabel');
+    if(!badge||!label)return;
+    if(data.authenticated){
+      badge.classList.remove('disconnected');
+      badge.classList.add('connected');
+      badge.removeAttribute('href');
+      badge.style.cursor='default';
+      badge.title='Google Drive 接続済み';
+      label.textContent='Drive 接続済み';
+    }else{
+      badge.classList.remove('connected');
+      badge.classList.add('disconnected');
+      badge.href='/auth/google';
+      badge.title='クリックしてGoogle Drive認証';
+      badge.style.cursor='pointer';
+      label.textContent='Drive 未接続';
+    }
+  }catch(e){console.warn('Drive status check failed:',e)}
+}
+checkDriveStatus();
+setInterval(checkDriveStatus,30000);
 
 </script>
 </body>
@@ -3666,6 +3709,134 @@ async def api_add_images(request: Request):
         "total_image_count": total_count,
         "image_shortage": total_count < 3,
     })
+
+
+# ============================================================
+# Google OAuth2 Web認証フロー
+# ============================================================
+_oauth_states: dict[str, float] = {}  # state -> 作成時刻
+
+
+@app.get("/auth/google")
+async def auth_google(request: Request):
+    """Google OAuth2 認可URLにリダイレクト"""
+    config = get_config()
+    client_id = (config.get("drive_client_id") or "").strip()
+    if not client_id:
+        raise HTTPException(status_code=400, detail="DRIVE_CLIENT_ID が未設定です。.envファイルを確認してください。")
+
+    state = secrets.token_urlsafe(32)
+    _oauth_states[state] = time.time()
+    # 古いstateを掃除（5分超過）
+    now = time.time()
+    expired = [k for k, v in _oauth_states.items() if now - v > 300]
+    for k in expired:
+        _oauth_states.pop(k, None)
+
+    # コールバックURL組み立て
+    callback_url = str(request.url_for("auth_callback"))
+
+    params = urlencode({
+        "client_id": client_id,
+        "redirect_uri": callback_url,
+        "response_type": "code",
+        "scope": "https://www.googleapis.com/auth/drive",
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    })
+    return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
+
+
+@app.get("/auth/callback")
+async def auth_callback(request: Request, code: str = "", state: str = "", error: str = ""):
+    """Google OAuth2 コールバック: 認可コードをトークンに交換して保存"""
+    if error:
+        return HTMLResponse(
+            f"<html><body><h2>認証エラー</h2><p>{html.escape(error)}</p>"
+            f'<p><a href="/">トップに戻る</a></p></body></html>',
+            status_code=400,
+        )
+    if not code:
+        raise HTTPException(status_code=400, detail="認可コードがありません")
+
+    # state検証
+    if state not in _oauth_states:
+        raise HTTPException(status_code=400, detail="不正なstateパラメータです。もう一度お試しください。")
+    _oauth_states.pop(state, None)
+
+    config = get_config()
+    client_id = (config.get("drive_client_id") or "").strip()
+    client_secret = (config.get("drive_client_secret") or "").strip()
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=400, detail="DRIVE_CLIENT_ID / DRIVE_CLIENT_SECRET が未設定です。")
+
+    callback_url = str(request.url_for("auth_callback"))
+
+    # トークン交換
+    import requests as http_requests
+    try:
+        resp = http_requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": callback_url,
+                "grant_type": "authorization_code",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        token_data = resp.json()
+    except Exception as e:
+        logger.error("OAuth2トークン交換失敗: %s", e)
+        return HTMLResponse(
+            f"<html><body><h2>トークン取得エラー</h2><p>{html.escape(str(e))}</p>"
+            f'<p><a href="/">トップに戻る</a></p></body></html>',
+            status_code=500,
+        )
+
+    refresh_token = token_data.get("refresh_token", "")
+    if not refresh_token:
+        return HTMLResponse(
+            "<html><body><h2>エラー</h2>"
+            "<p>refresh_tokenが取得できませんでした。Google Cloud ConsoleでOAuthクライアントの設定を確認してください。</p>"
+            '<p><a href="/">トップに戻る</a></p></body></html>',
+            status_code=400,
+        )
+
+    # トークンをファイルに永続保存
+    save_drive_token_file(refresh_token, client_id, client_secret)
+
+    return HTMLResponse(
+        '<html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;text-align:center;padding:60px">'
+        '<h2 style="color:#16a34a">Google Drive 認証完了</h2>'
+        '<p>トークンが保存されました。このページを閉じてください。</p>'
+        '<script>setTimeout(()=>window.location.href="/",2000)</script>'
+        '</body></html>'
+    )
+
+
+@app.get("/auth/status")
+async def auth_status():
+    """Drive認証状態を返す"""
+    token_data = _load_drive_token_data()
+    config = get_config()
+    env_token = (config.get("drive_refresh_token") or "").strip()
+
+    authenticated = bool(token_data) or bool(env_token)
+    method = ""
+    if token_data:
+        method = "web_oauth"
+    elif env_token:
+        method = "env_variable"
+
+    return {
+        "authenticated": authenticated,
+        "method": method,
+        "saved_at": token_data.get("saved_at", "") if token_data else "",
+    }
 
 
 if __name__ == "__main__":

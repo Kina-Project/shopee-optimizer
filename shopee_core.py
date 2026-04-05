@@ -48,6 +48,22 @@ except ImportError:
 
 
 # === 設定（環境変数でオーバーライド可能） ===
+def _extract_drive_folder_id(value):
+    """DriveフォルダURLまたはIDからフォルダIDを抽出"""
+    if not value:
+        return ""
+    m = re.search(r"/folders/([a-zA-Z0-9_-]+)", value)
+    return m.group(1) if m else value.strip()
+
+
+def _extract_spreadsheet_id(value):
+    """スプレッドシートURLまたはIDからスプレッドシートIDを抽出"""
+    if not value:
+        return ""
+    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", value)
+    return m.group(1) if m else value.strip()
+
+
 def get_config():
     """環境変数から設定を読み込み"""
     return {
@@ -58,9 +74,9 @@ def get_config():
             "GCP_KEY_PATH",
             str(Path.home() / ".config" / "gcloud" / "keys" / "mcp-sheets-key.json"),
         )),
-        "spreadsheet_id": os.environ.get("SPREADSHEET_ID", ""),
-        "drive_parent_folder_id": os.environ.get(
-            "DRIVE_PARENT_FOLDER_ID", ""
+        "spreadsheet_id": _extract_spreadsheet_id(os.environ.get("SPREADSHEET_ID", "")),
+        "drive_parent_folder_id": _extract_drive_folder_id(
+            os.environ.get("DRIVE_PARENT_FOLDER_ID", "")
         ),
         "drive_refresh_token": os.environ.get("DRIVE_REFRESH_TOKEN", ""),
         "drive_client_id": os.environ.get("DRIVE_CLIENT_ID", ""),
@@ -886,12 +902,62 @@ def generate_video(
 
 DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
 
+# --- Drive OAuth2 トークンファイル管理 ---
+DRIVE_TOKEN_PATH = Path(os.environ.get("OUTPUT_BASE", str(Path(__file__).parent / "output"))) / "_config" / "drive_token.json"
+
+
+def save_drive_token_file(refresh_token: str, client_id: str, client_secret: str):
+    """Web UI OAuth2認証で取得したトークンをJSONファイルに永続保存"""
+    DRIVE_TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "refresh_token": refresh_token,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "saved_at": datetime.now(JST).isoformat(),
+    }
+    DRIVE_TOKEN_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("Driveトークンを保存しました: %s", DRIVE_TOKEN_PATH)
+
+
+def _load_drive_token_data() -> dict | None:
+    """保存済みトークンファイルを読み込む。なければNone"""
+    if not DRIVE_TOKEN_PATH.exists():
+        return None
+    try:
+        data = json.loads(DRIVE_TOKEN_PATH.read_text(encoding="utf-8"))
+        if data.get("refresh_token"):
+            return data
+    except Exception as e:
+        logger.warning("Driveトークンファイル読み込み失敗: %s", e)
+    return None
+
 
 def _get_drive_credentials(config):
-    """Drive API用の認証情報を取得（3段階フォールバック）"""
+    """Drive API用の認証情報を取得（4段階フォールバック）"""
     errors = []
 
-    # 方法1: OAuth2 リフレッシュトークン（Cloud Run用）
+    # 方法1: ファイル保存済みトークン（Web UIで認証済み）
+    token_data = _load_drive_token_data()
+    if token_data:
+        try:
+            from google.oauth2.credentials import Credentials as OAuthCreds
+            creds = OAuthCreds(
+                token=None,
+                refresh_token=token_data["refresh_token"],
+                client_id=token_data["client_id"],
+                client_secret=token_data["client_secret"],
+                token_uri="https://oauth2.googleapis.com/token",
+                scopes=DRIVE_SCOPES,
+            )
+            from google.auth.transport.requests import Request
+            creds.refresh(Request())
+            logger.info("Drive認証: 保存済みトークンファイルで成功")
+            return creds
+        except Exception as e:
+            errors.append(f"保存済みトークン: {e}")
+            logger.warning("Drive認証方法1(トークンファイル)失敗: %s", e)
+
+    # 方法2: 環境変数 OAuth2 リフレッシュトークン（従来互換）
     if config.get("drive_refresh_token"):
         try:
             from google.oauth2.credentials import Credentials as OAuthCreds
@@ -903,16 +969,15 @@ def _get_drive_credentials(config):
                 token_uri="https://oauth2.googleapis.com/token",
                 scopes=DRIVE_SCOPES,
             )
-            # トークンリフレッシュを事前テスト
             from google.auth.transport.requests import Request
             creds.refresh(Request())
             logger.info("Drive認証: OAuth2リフレッシュトークンで成功")
             return creds
         except Exception as e:
             errors.append(f"OAuth2リフレッシュトークン: {e}")
-            logger.warning("Drive認証方法1(OAuth2)失敗: %s", e)
+            logger.warning("Drive認証方法2(OAuth2)失敗: %s", e)
 
-    # 方法2: Application Default Credentials
+    # 方法3: Application Default Credentials
     try:
         import google.auth
         creds, _ = google.auth.default(scopes=DRIVE_SCOPES)
@@ -920,9 +985,9 @@ def _get_drive_credentials(config):
         return creds
     except Exception as e:
         errors.append(f"ADC: {e}")
-        logger.debug("Drive認証方法2(ADC)失敗: %s", e)
+        logger.debug("Drive認証方法3(ADC)失敗: %s", e)
 
-    # 方法3: gcloud CLIのアクセストークン（ローカル開発用）
+    # 方法4: gcloud CLIのアクセストークン（ローカル開発用）
     try:
         token = subprocess.check_output(
             ["gcloud", "auth", "print-access-token"], text=True, timeout=10
@@ -933,7 +998,7 @@ def _get_drive_credentials(config):
             return OAuthCreds(token=token)
     except Exception as e:
         errors.append(f"gcloud CLI: {e}")
-        logger.debug("Drive認証方法3(gcloud)失敗: %s", e)
+        logger.debug("Drive認証方法4(gcloud)失敗: %s", e)
 
     logger.error("Drive認証: 全方法失敗 - %s", "; ".join(errors))
     return None
@@ -1271,7 +1336,15 @@ def write_to_spreadsheet(url, product, image_count, image_folder_url="", config=
     gc = gspread.authorize(creds)
     ss = gc.open_by_key(config["spreadsheet_id"])
 
-    ws = ss.worksheet("商品データ")
+    try:
+        ws = ss.worksheet("商品データ")
+    except Exception:
+        ws = ss.add_worksheet(title="商品データ", rows=1000, cols=20)
+        ws.append_row([
+            "No", "URL", "ASIN", "ブランド", "日本語名", "英語名", "逆翻訳名",
+            "特徴（日本語）", "特徴（英語）", "説明（英語）",
+            "画像フォルダURL", "画像枚数", "ステータス", "日時",
+        ])
     existing = ws.col_values(3)
     asin = product.get("asin", "")
     if not asin:
@@ -1452,7 +1525,10 @@ def fetch_product_sheet_history(limit=300, config=None):
     )
     gc = gspread.authorize(creds)
     ss = gc.open_by_key(config["spreadsheet_id"])
-    ws = ss.worksheet("商品データ")
+    try:
+        ws = ss.worksheet("商品データ")
+    except Exception:
+        return []
     values = ws.get_all_values()
     if len(values) <= 1:
         return []
