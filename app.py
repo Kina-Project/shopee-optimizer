@@ -2,6 +2,9 @@
 Shopee商品ページ最適化ツール - Web API（Cloud Run用）
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import json
 import os
 import logging
