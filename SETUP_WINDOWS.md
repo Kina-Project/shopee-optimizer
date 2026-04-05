@@ -1,6 +1,6 @@
 # Shopee Optimizer セットアップ（Windows + Claude Code）
 
-このファイルを読んだら、まず**モード判定**を行い、該当するステップをユーザーに一覧表示してください。
+このファイルを読んだら、まずユーザーに**全体の流れ**を表示してから進めてください。
 
 ---
 
@@ -19,10 +19,33 @@
 
 ---
 
+## Step 0: ダウンロード（ユーザー操作が必要）
+
+まず、ユーザーに以下を伝えてください：
+
+> **Shopee Optimizerのセットアップを始めます！**
+>
+> まず、以下のURLからツールをダウンロードしてください。
+>
+> **ダウンロードURL:**
+> https://github.com/Kina-Project/shopee-optimizer/archive/refs/heads/main.zip
+>
+> ⚠️ **重要：ZIPの展開について**
+> - ZIPを展開すると `shopee-optimizer-main` というフォルダが作成されます
+> - もし以前のバージョンのフォルダが同じ場所にある場合、**上書きされてしまいます**
+> - 以前のフォルダがある場合は、**先にフォルダ名を変更**してください
+>   - 例: `shopee-optimizer-main` → `shopee-optimizer-main_old`
+> - その後、ZIPを展開してください
+>
+> 展開が終わったら教えてください。
+
+ユーザーが展開完了を報告したら、展開されたフォルダに移動して次に進んでください。
+
+---
+
 ## モード判定
 
-まず、このフォルダに `.env` ファイルが**あるかどうか**を確認してください。
-また、PC上に以前の `shopee-optimizer-main` フォルダがないかも確認してください。
+PC上に以前の `shopee-optimizer-main` フォルダ（リネーム済みのものを含む）がないか確認してください。
 
 ```
 dir /s /b C:\Users\%USERNAME%\Desktop\shopee-optimizer-main*
