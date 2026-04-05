@@ -72,7 +72,7 @@ def get_config():
         "font_path": os.environ.get("FONT_PATH", ""),
         "gcp_key_path": Path(os.environ.get(
             "GCP_KEY_PATH",
-            str(Path.home() / ".config" / "gcloud" / "keys" / "mcp-sheets-key.json"),
+            str(Path(__file__).parent / "keys" / "service-account-key.json"),
         )),
         "spreadsheet_id": _extract_spreadsheet_id(os.environ.get("SPREADSHEET_ID", "")),
         "drive_parent_folder_id": _extract_drive_folder_id(
