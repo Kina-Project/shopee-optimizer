@@ -42,19 +42,24 @@ pip install -r requirements.txt
 
 ---
 
-### Step 2: .env ファイルの作成
+### Step 2: .env ファイルの設定
 
-`.env.example` を `.env` にコピーしてください。
+以前セットアップした `.env` ファイルがPC上にある可能性があります。
+まず、デスクトップや以前のshopee-optimizer-mainフォルダ内に `.env` ファイルがないか探してください。
+
+```
+dir /s /b C:\Users\%USERNAME%\Desktop\*.env
+dir /s /b C:\Users\%USERNAME%\OneDrive\Desktop\*.env
+```
+
+- **見つかった場合**: その `.env` をこのフォルダにコピーしてください。APIキーはすでに設定済みです。
+- **見つからない場合**: `.env.example` を `.env` にコピーして、ユーザーにAPIキーの入力を依頼してください。
 
 ```
 copy .env.example .env
 ```
 
----
-
-### Step 3: APIキーの設定（ユーザー操作が必要）
-
-ここでユーザーに以下を伝えてください：
+`.env` が空（APIキーが未設定）の場合、ユーザーに以下を伝えてください：
 
 > .env ファイルをメモ帳で開きます。以下のAPIキーを入力して保存してください。
 > 
@@ -76,7 +81,7 @@ copy .env.example .env
 
 ---
 
-### Step 4: サービスアカウント鍵の配置（ユーザー操作が必要な場合あり）
+### Step 4: サービスアカウント鍵の配置
 
 このフォルダ内に `keys` フォルダを作成してください。
 
@@ -84,13 +89,21 @@ copy .env.example .env
 mkdir keys
 ```
 
-ユーザーに以下を伝えてください：
+以前セットアップした `service-account-key.json` がPC上にある可能性があります。
+まず探してください。
+
+```
+dir /s /b C:\Users\%USERNAME%\Desktop\*service-account*.json
+dir /s /b C:\Users\%USERNAME%\OneDrive\Desktop\*service-account*.json
+dir /s /b C:\Users\%USERNAME%\Downloads\*service-account*.json
+```
+
+- **見つかった場合**: `keys/service-account-key.json` にコピーしてください。
+- **見つからない場合**: ユーザーに以下を伝えてください：
 
 > Google Cloudで作成したサービスアカウントの鍵ファイル（JSON）を、
 > `keys/service-account-key.json` として配置してください。
-> 
-> ファイルがデスクトップなどにある場合は、ファイル名を教えてください。
-> こちらでコピーします。
+> ファイルがどこにあるか教えてください。こちらでコピーします。
 
 ユーザーがファイルの場所を教えてくれたら、`keys/service-account-key.json` にコピーしてください。
 
