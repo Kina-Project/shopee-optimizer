@@ -19,76 +19,46 @@
 
 ---
 
-## Step 0: ダウンロード（ユーザー操作が必要）
+## Step 1: ZIPの展開（ユーザー操作が必要）
 
 まず、ユーザーに以下を伝えてください：
 
-> **Shopee Optimizerのセットアップを始めます！**
+> **Shopee Optimizerのアップデートを始めます！以下の4ステップで完了します：**
 >
-> まず、以下のURLからツールをダウンロードしてください。
+> 1. ZIPの展開
+> 2. 旧フォルダから設定ファイルをコピー
+> 3. 依存パッケージの更新
+> 4. 起動確認
 >
-> **ダウンロードURL:**
-> https://github.com/Kina-Project/shopee-optimizer/archive/refs/heads/main.zip
+> APIキーの再入力は不要です。旧フォルダの設定をそのまま引き継ぎます。
+>
+> ---
+>
+> **まず、受け取ったZIPファイルをデスクトップに展開してください。**
 >
 > ⚠️ **重要：ZIPの展開について**
 > - ZIPを展開すると `shopee-optimizer-main` というフォルダが作成されます
-> - もし以前のバージョンのフォルダが同じ場所にある場合、**上書きされてしまいます**
+> - 以前のフォルダが同じ場所にある場合、**上書きされて設定が消えてしまいます**
 > - 以前のフォルダがある場合は、**先にフォルダ名を変更**してください
 >   - 例: `shopee-optimizer-main` → `shopee-optimizer-main_old`
 > - その後、ZIPを展開してください
 >
 > 展開が終わったら教えてください。
 
-ユーザーが展開完了を報告したら、展開されたフォルダに移動して次に進んでください。
+ユーザーが展開完了を報告したら、新しいフォルダに移動して次に進んでください。
 
 ---
 
-## モード判定
+## Step 2: 旧フォルダから設定ファイルをコピー
 
-PC上に以前の `shopee-optimizer-main` フォルダ（リネーム済みのものを含む）がないか確認してください。
+PC上にある旧フォルダ（リネーム済みのものを含む）を探してください。
 
 ```
 dir /s /b C:\Users\%USERNAME%\Desktop\shopee-optimizer-main*
 dir /s /b C:\Users\%USERNAME%\OneDrive\Desktop\shopee-optimizer-main*
 ```
 
-判定結果に応じて、ユーザーに以下を表示してください：
-
-### A. アップデートの場合（旧フォルダが見つかった）
-
-> **アップデートモードで進めます。以下のステップを実行します：**
->
-> 1. 旧フォルダから設定ファイルをコピー
-> 2. 依存パッケージの更新
-> 3. 起動確認
->
-> 旧フォルダの設定をそのまま引き継ぐので、APIキーの再入力は不要です。
-
-→ **「A. アップデート手順」** に進む
-
-### B. 初回セットアップの場合（旧フォルダなし）
-
-> **初回セットアップモードで進めます。以下のステップを実行します：**
->
-> 1. Python / ffmpeg のインストール確認
-> 2. 依存パッケージのインストール
-> 3. APIキーの設定（.env）
-> 4. サービスアカウント鍵の配置
-> 5. 起動
-> 6. Google Drive認証
-> 7. 動作確認
->
-> 各APIキーの入力が必要です。事前にメモ帳等にまとめておくとスムーズです。
-
-→ **「B. 初回セットアップ手順」** に進む
-
----
-
-# A. アップデート手順
-
-### A-1: 旧フォルダから設定ファイルをコピー
-
-旧フォルダのパスを特定したら、以下の3ファイルをこのフォルダにコピーしてください。
+旧フォルダが見つかったら、以下の3ファイルを新しいフォルダにコピーしてください。
 
 ```
 copy "（旧フォルダパス）\.env" ".env"
@@ -112,60 +82,12 @@ copy "（旧フォルダパス）\output\_config\drive_token.json" "output\_conf
 > - .env（APIキー設定）✅ or ❌
 > - keys/service-account-key.json（Sheets認証鍵）✅ or ❌
 > - output/_config/drive_token.json（Drive認証トークン）✅ or ❌
-
----
-
-### A-2: 依存パッケージの更新
-
-```
-pip install -r requirements.txt
-```
-
----
-
-### A-3: 起動確認
-
-```
-python app.py
-```
-
-起動したら、ユーザーに伝えてください：
-
-> アップデート完了です！
-> ブラウザで http://localhost:8080 を開いて動作確認してください。
-> 画面上部の「Drive 接続済み」が緑色になっていればOKです。
 >
-> もし「Drive 未接続」と表示されたら、クリックして再認証してください。
->
-> 次回以降は `start_shopee.bat` をダブルクリックするだけで起動できます。
->
-> **旧フォルダは念のためしばらく残しておいてください。**
-
-→ 完了
+> ❌のものがあっても、後で設定できるので大丈夫です。
 
 ---
 
-# B. 初回セットアップ手順
-
-### B-1: 前提確認
-
-以下のコマンドを実行して、インストール状況を確認してください。
-
-```
-python --version
-ffmpeg -version
-```
-
-- `python` が見つからない場合は `py --version` も試す
-- Pythonが入っていない場合: `winget install Python.Python.3.12` を実行
-- ffmpegが入っていない場合: `winget install Gyan.FFmpeg` を実行
-- インストール後、ターミナルを再起動して再確認
-
----
-
-### B-2: 依存パッケージのインストール
-
-このファイルがあるフォルダに移動して実行：
+## Step 3: 依存パッケージの更新
 
 ```
 pip install -r requirements.txt
@@ -175,53 +97,7 @@ pip install -r requirements.txt
 
 ---
 
-### B-3: .env ファイルの設定（ユーザー操作が必要）
-
-`.env.example` を `.env` にコピー：
-
-```
-copy .env.example .env
-```
-
-ユーザーがAPIキーをメモ帳等にまとめている場合は、そのファイルを読んで .env に設定しても構いません。
-
-APIキーが未設定の場合、ユーザーに以下を伝えてください：
-
-> .env ファイルをメモ帳で開きます。以下のAPIキーを入力して保存してください。
-> 
-> 設定が必要な項目：
-> - `OPENAI_API_KEY` — OpenAIのAPIキー
-> - `FAL_KEY` — fal.aiのAPIキー  
-> - `RAINFOREST_API_KEY` — Rainforest APIのキー
-> - `SERPER_API_KEY` — Serper.devのキー（任意。なくても動きます）
-> - `DRIVE_CLIENT_ID` — Google Cloud OAuthクライアントID
-> - `DRIVE_CLIENT_SECRET` — Google Cloud OAuthクライアントシークレット
-> - `DRIVE_PARENT_FOLDER_ID` — Google DriveフォルダのURL（そのまま貼り付けOK）
-> - `SPREADSHEET_ID` — GoogleスプレッドシートのURL（そのまま貼り付けOK）
-> 
-> `DRIVE_REFRESH_TOKEN`、`GCP_KEY_PATH`、`PORT` は空のままでOKです。
-> 
-> 保存したら教えてください。
-
----
-
-### B-4: サービスアカウント鍵の配置（ユーザー操作が必要な場合あり）
-
-```
-mkdir keys
-```
-
-ユーザーに以下を伝えてください：
-
-> Google Cloudで作成したサービスアカウントの鍵ファイル（JSON）を、
-> `keys/service-account-key.json` として配置してください。
-> ファイルがどこにあるか教えてください。こちらでコピーします。
-
-ユーザーがファイルの場所を教えてくれたら、`keys/service-account-key.json` にコピーしてください。
-
----
-
-### B-5: 起動
+## Step 4: 起動確認
 
 ```
 python app.py
@@ -229,44 +105,17 @@ python app.py
 
 起動に成功したら、ユーザーに以下を伝えてください：
 
-> サーバーが起動しました！
-> ブラウザで http://localhost:8080 を開いてください。
+> アップデート完了です！
+> ブラウザで http://localhost:8080 を開いて動作確認してください。
 >
-> もしWindows Defenderのファイアウォール警告が出たら「アクセスを許可する」を選んでください。
-
----
-
-### B-6: Google Drive認証（ユーザー操作が必要）
-
-ユーザーに以下を伝えてください：
-
-> ブラウザで http://localhost:8080 を開くと、画面上部に「Drive 未接続」というボタンがあります。
-> これをクリックして、Googleアカウントでログイン・許可してください。
-> 「Google Drive 認証完了」と表示されたら成功です。自動的にトップページに戻ります。
-
-もし認証できない場合（Google Workspaceの制限等）は、バックアップ手順を実行：
-
-```
-python get_token.py
-```
-
-ブラウザが開くのでGoogleアカウントでログイン・許可すると、
-`DRIVE_REFRESH_TOKEN=xxxxx` が表示されます。
-この値を .env の `DRIVE_REFRESH_TOKEN` に設定して、サーバーを再起動してください。
-
----
-
-### B-7: 動作確認
-
-ユーザーに以下を伝えてください：
-
-> セットアップ完了です！
-> ブラウザで http://localhost:8080 を開いて、AmazonのURLを入力して試してみてください。
-> 
-> テスト用URL例：
-> https://www.amazon.co.jp/dp/B0D7RCZ5GG
-> 
+> 確認ポイント：
+> - 画面上部の「Drive 接続済み」が緑色になっていればOKです
+> - もし「Drive 未接続」と表示されたら、クリックしてGoogleアカウントで再認証してください
+> - もしWindows Defenderのファイアウォール警告が出たら「アクセスを許可する」を選んでください
+>
 > 次回以降は `start_shopee.bat` をダブルクリックするだけで起動できます。
+>
+> **旧フォルダは念のためしばらく残しておいてください。**
 
 → 完了
 
@@ -276,7 +125,7 @@ python get_token.py
 
 ### 「Rainforest APIキーが必要です」エラー
 → .env ファイルが正しく読み込まれていない可能性があります。
-→ app.py の先頭に `from dotenv import load_dotenv` と `load_dotenv()` があるか確認してください。
+→ .env ファイルの中身を確認してください。RAINFOREST_API_KEY に値が入っているか見せてください。
 
 ### ポート8080が使用中
 → .env の `PORT=8080` を `PORT=9090` 等に変更して再起動してください。
@@ -286,7 +135,15 @@ python get_token.py
 
 ### Drive認証で「アクセスをブロック」と表示される
 → Google Cloud ConsoleのOAuth同意画面で、テストユーザーに使用するGoogleアカウントのメールアドレスを追加してください。
-→ スクリーンショットを送ってもらってください。
+→ その画面のスクリーンショットを送ってもらってください。
+
+### Drive認証ボタンが機能しない場合のバックアップ手順
+→ 以下のコマンドを実行してください：
+```
+python get_token.py
+```
+→ ブラウザが開くのでGoogleアカウントでログイン・許可すると、`DRIVE_REFRESH_TOKEN=xxxxx` が表示されます。
+→ この値を .env の `DRIVE_REFRESH_TOKEN` に設定して、サーバーを再起動してください。
 
 ### スプレッドシートに書き込めない
 → サービスアカウントのメールアドレス（`xxx@xxx.iam.gserviceaccount.com`）がスプレッドシートに「編集者」として共有されているか確認してください。
